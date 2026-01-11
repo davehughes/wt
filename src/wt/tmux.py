@@ -99,6 +99,50 @@ def render_profile(
     return _render_value(copy.deepcopy(profile), variables)
 
 
+def get_current_window_info(socket: str | None = None) -> dict[str, Any] | None:
+    """Get info about the current tmux window.
+
+    Returns:
+        Dict with session_name, window_name, window_index, panes (list of commands)
+        or None if not inside tmux.
+    """
+    if not is_inside_tmux():
+        return None
+
+    # Get session and window info
+    result = run_tmux(
+        "display-message", "-p",
+        "#{session_name}\t#{window_name}\t#{window_index}",
+        socket=socket,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+
+    parts = result.stdout.strip().split("\t")
+    if len(parts) < 3:
+        return None
+
+    session_name, window_name, window_index = parts
+
+    # Get pane commands
+    panes_result = run_tmux(
+        "list-panes", "-F", "#{pane_current_command}",
+        socket=socket,
+        check=False,
+    )
+    panes = []
+    if panes_result.returncode == 0:
+        panes = [p for p in panes_result.stdout.strip().split("\n") if p]
+
+    return {
+        "session_name": session_name,
+        "window_name": window_name,
+        "window_index": window_index,
+        "panes": panes,
+    }
+
+
 def is_inside_tmux() -> bool:
     """Check if currently running inside a tmux session."""
     return bool(os.environ.get("TMUX"))

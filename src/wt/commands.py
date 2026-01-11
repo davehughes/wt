@@ -13,49 +13,6 @@ from wt.config import Config, ConfigError
 BACKGROUND_SESSION = "wt-bg"
 
 
-def link_template(config: Config, worktree_path: Path) -> list[str]:
-    """Symlink template directory contents into a worktree.
-
-    Creates symlinks in the worktree for each item in the template directory.
-    Existing symlinks pointing to the template are updated; other existing
-    files/directories are skipped with a warning.
-
-    Args:
-        config: Application configuration
-        worktree_path: Path to the worktree
-
-    Returns:
-        List of actions taken (for logging)
-    """
-    actions = []
-
-    if config.template_dir is None or not config.template_dir.exists():
-        return actions
-
-    for item in config.template_dir.iterdir():
-        target = worktree_path / item.name
-        source = item
-
-        if target.is_symlink():
-            # Check if it already points to the right place
-            if target.resolve() == source.resolve():
-                actions.append(f"Already linked: {item.name}")
-                continue
-            # Remove old symlink and recreate
-            target.unlink()
-            target.symlink_to(source)
-            actions.append(f"Updated link: {item.name}")
-        elif target.exists():
-            # Don't overwrite existing files/directories
-            actions.append(f"Skipped (exists): {item.name}")
-        else:
-            # Create new symlink
-            target.symlink_to(source)
-            actions.append(f"Linked: {item.name}")
-
-    return actions
-
-
 def get_current_worktree_info(config: Config) -> tuple[str, str] | None:
     """Get topic/name for the current working directory if it's a managed worktree.
 
@@ -128,9 +85,6 @@ def ensure_worktree(
         except graphite.GraphiteError:
             # Non-fatal: graphite tracking can be done later with sync
             pass
-
-    # Link template directory contents
-    link_template(config, worktree_path)
 
     return worktree_path, True
 
@@ -371,41 +325,6 @@ def cmd_sync(
     return actions
 
 
-def cmd_link(
-    config: Config,
-    name: str | None = None,
-) -> list[str]:
-    """Link template directory contents into a worktree.
-
-    Args:
-        config: Application configuration
-        name: Worktree name in "topic/name" format (defaults to current)
-
-    Returns:
-        List of actions taken
-
-    Raises:
-        ConfigError: If name format is invalid or not in a worktree
-    """
-    if name:
-        topic, wt_name = config.parse_worktree_name(name)
-        worktree_path = config.worktree_path(topic, wt_name)
-    else:
-        current = get_current_worktree_info(config)
-        if current is None:
-            raise ConfigError("Not in a managed worktree. Specify a name or cd to a worktree.")
-        topic, wt_name = current
-        worktree_path = config.worktree_path(topic, wt_name)
-
-    if not worktree_path.exists():
-        raise ConfigError(f"Worktree not found: {worktree_path}")
-
-    if config.template_dir is None or not config.template_dir.exists():
-        raise ConfigError(f"Template directory not found: {config.template_dir}")
-
-    return link_template(config, worktree_path)
-
-
 def cmd_close(config: Config) -> None:
     """Close the current tmux window gracefully.
 
@@ -566,25 +485,72 @@ def cmd_foreground(config: Config, name: str) -> str:
     return new_target
 
 
-def cmd_switch(config: Config, name: str, close: bool = False) -> str:
-    """Background (or close) current window and foreground target window.
+def cmd_go(
+    config: Config,
+    name: str,
+    close: bool = False,
+    profile: str | None = None,
+    from_branch: str | None = None,
+) -> tuple[str, bool]:
+    """Go to a worktree, creating it if necessary.
+
+    This is the unified "go work on XYZ" command that:
+    1. Backgrounds (or closes) the current window if in a managed worktree
+    2. If target is backgrounded → foregrounds it
+    3. If target has an active window → switches to it
+    4. If target worktree exists but no window → creates window
+    5. If target doesn't exist → creates worktree + branch + window
 
     Args:
         config: Configuration
-        name: Target window name (topic/name or topic-name format)
+        name: Target worktree name (topic/name format)
         close: If True, close current window instead of backgrounding
+        profile: Profile name for new windows (defaults to config default)
+        from_branch: Base branch if creating new worktree
 
     Returns:
-        The foregrounded window target
+        Tuple of (window_target, was_created) where was_created indicates
+        if a new worktree was created
     """
-    # Close or background current window first
-    if close:
-        cmd_close(config)
-    else:
-        cmd_background(config)
+    topic, wt_name = config.parse_worktree_name(name)
+    window_name = f"{topic}-{wt_name}"
 
-    # Then foreground the target
-    return cmd_foreground(config, name)
+    # Background/close current window if in a managed worktree and inside tmux
+    if tmux.is_inside_tmux():
+        current = get_current_worktree_info(config)
+        if current is not None:
+            current_window_name = f"{current[0]}-{current[1]}"
+            # Don't background if we're switching to the same worktree
+            if current_window_name != window_name:
+                if close:
+                    cmd_close(config)
+                else:
+                    cmd_background(config)
+
+    # Check if target is backgrounded
+    if tmux.session_exists(BACKGROUND_SESSION):
+        if tmux.window_exists(window_name, BACKGROUND_SESSION):
+            window_target = cmd_foreground(config, name)
+            return window_target, False
+
+    # Check if target has an active window in current session
+    current_session = tmux.get_current_session()
+    if current_session and tmux.window_exists(window_name, current_session):
+        window_target = f"{current_session}:{window_name}"
+        tmux.select_window(window_target)
+        return window_target, False
+
+    # Check if target has an active window in "wt" session
+    if tmux.session_exists("wt") and tmux.window_exists(window_name, "wt"):
+        window_target = f"wt:{window_name}"
+        if tmux.is_inside_tmux():
+            tmux.select_window(window_target)
+        else:
+            tmux.attach_session("wt")
+        return window_target, False
+
+    # No existing window - use cmd_open to create worktree + window
+    return cmd_open(config, name, profile=profile, from_branch=from_branch)
 
 
 @dataclass
@@ -597,7 +563,6 @@ class StatusInfo:
     root: Path
     default_profile: str
     available_profiles: list[str]
-    template_dir: Path | None
 
     # Current worktree info (if in a managed worktree)
     in_managed_worktree: bool
@@ -608,6 +573,13 @@ class StatusInfo:
     current_branch: str | None = None
     has_tmux_window: bool = False
     graphite_available: bool = False
+
+    # Tmux session info
+    inside_tmux: bool = False
+    tmux_session: str | None = None
+    tmux_window: str | None = None
+    tmux_panes: list[str] | None = None
+    backgrounded_count: int = 0
 
 
 def cmd_status(config: Config, config_path: str | None = None) -> StatusInfo:
@@ -621,12 +593,21 @@ def cmd_status(config: Config, config_path: str | None = None) -> StatusInfo:
         StatusInfo with current state
     """
     import os
-    from wt.config import DEFAULT_CONFIG_PATH
+    from wt.config import DEFAULT_CONFIG_PATHS
 
     # Determine config path for display
     if config_path is None:
         env_path = os.environ.get("WT_CONFIG")
-        config_path = env_path if env_path else str(DEFAULT_CONFIG_PATH)
+        if env_path:
+            config_path = env_path
+        else:
+            # Find the first existing default path
+            for default_path in DEFAULT_CONFIG_PATHS:
+                if default_path.exists():
+                    config_path = str(default_path)
+                    break
+            else:
+                config_path = str(DEFAULT_CONFIG_PATHS[0])
 
     # Get current worktree info
     current = get_current_worktree_info(config)
@@ -637,7 +618,6 @@ def cmd_status(config: Config, config_path: str | None = None) -> StatusInfo:
         root=config.root,
         default_profile=config.default_profile,
         available_profiles=list(config.profiles.keys()),
-        template_dir=config.template_dir,
         in_managed_worktree=current is not None,
         graphite_available=graphite.is_available(),
     )
@@ -664,5 +644,18 @@ def cmd_status(config: Config, config_path: str | None = None) -> StatusInfo:
         if not has_window and tmux.session_exists("wt"):
             has_window = tmux.window_exists(window_name, "wt")
         status.has_tmux_window = has_window
+
+    # Tmux session info
+    status.inside_tmux = tmux.is_inside_tmux()
+    if status.inside_tmux:
+        window_info = tmux.get_current_window_info()
+        if window_info:
+            status.tmux_session = window_info["session_name"]
+            status.tmux_window = window_info["window_name"]
+            status.tmux_panes = window_info["panes"]
+
+    # Count backgrounded sessions
+    backgrounded = cmd_sessions(config)
+    status.backgrounded_count = len(backgrounded)
 
     return status

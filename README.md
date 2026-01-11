@@ -53,11 +53,10 @@ export WT_CONFIG=~/projects/myproject/.wt.yaml
 |--------|-------------|
 | `branch_prefix` | Prefix for branch names (e.g., `dave` creates branches like `dave/feature/auth`) |
 | `root` | Base directory for worktrees (worktrees stored at `$root/<topic>/<name>`) |
-| `template_dir` | Directory containing files to symlink into new worktrees (defaults to `$root/.template`) |
 | `default_profile` | Default tmux profile name |
 | `profiles` | Dictionary of tmux profile configurations |
 
-### Profile Template Variables
+### Profile Variables
 
 | Variable | Description |
 |----------|-------------|
@@ -67,25 +66,34 @@ export WT_CONFIG=~/projects/myproject/.wt.yaml
 
 ## Commands
 
-### `wt open [<topic>/<name>] [--profile <name>] [--from <branch>]`
+### `wt [go] <topic>/<name> [--profile <name>] [--from <branch>] [--close]`
 
-Open a tmux window for a worktree, creating the worktree if it doesn't exist.
+The primary command for working with worktrees. The `go` keyword is optional when providing a worktree name. This is the "go work on XYZ" command that transparently handles:
 
-If inside tmux, creates a new window in the current session.
-If outside tmux, creates/attaches to a "wt" session and adds the window there.
+1. Backgrounding the current window (if in a managed worktree)
+2. Foregrounding a backgrounded window (if target is in background)
+3. Switching to an active window (if target already has a window)
+4. Creating a new window (if worktree exists but no window)
+5. Creating worktree + branch + window (if nothing exists yet)
 
 ```bash
-# Interactive picker (requires simple-term-menu)
-wt open
+# Interactive picker
+wt go
 
-# Open existing or create new worktree from current branch
-wt open feature/auth
+# Go to or create a worktree (shorthand)
+wt feature/auth
+
+# Explicit form
+wt go feature/auth
 
 # Create new worktree from specific branch
-wt open feature/auth --from main
+wt feature/auth --from main
 
-# Open with specific profile
-wt open feature/auth --profile focused
+# Go with specific tmux profile
+wt feature/auth --profile focused
+
+# Close current window instead of backgrounding
+wt feature/auth --close
 ```
 
 When creating a new worktree:
@@ -93,18 +101,22 @@ When creating a new worktree:
 - Worktree: `<root>/<topic>/<name>` (e.g., `~/projects/feature/auth`)
 - If the branch already exists (e.g., from a deleted worktree), it's reused
 
-### `wt list`
+### `wt list [--bg]`
 
 List all managed worktrees with their status.
 
 ```bash
+# List all worktrees
 wt list
+
+# List only backgrounded worktrees
+wt list --bg
 ```
 
 Output shows:
 - Worktree name
 - Branch status (including warnings for mismatched/missing branches)
-- Active tmux window indicator
+- Window status (active, background, or none)
 
 ### `wt sync [<topic>/<name>] [--all]`
 
@@ -121,34 +133,12 @@ wt sync feature/auth
 wt sync --all
 ```
 
-### `wt link [<topic>/<name>]`
-
-Symlink template directory contents into a worktree. Useful for re-linking after template changes or if symlinks were accidentally removed.
-
-```bash
-# Link in current worktree
-wt link
-
-# Link in specific worktree
-wt link feature/auth
-```
-
-Template files are symlinked (not copied), so changes to the template are reflected in all worktrees.
-
 ### `wt close`
 
 Gracefully close the current window. Sends `/exit` to Claude Code before closing the tmux window.
 
 ```bash
 wt close
-```
-
-### `wt sessions`
-
-List all backgrounded worktree windows. Backgrounded windows continue running in a hidden tmux session.
-
-```bash
-wt sessions
 ```
 
 ### `wt bg`
@@ -174,21 +164,6 @@ wt fg feature-auth
 wt fg feature/auth
 ```
 
-### `wt switch [<name>] [--close]`
-
-Background the current window and foreground another in one operation.
-
-```bash
-# Interactive picker
-wt switch
-
-# Direct switch
-wt switch feature/auth
-
-# Close current window instead of backgrounding
-wt switch feature/auth --close
-```
-
 ### `wt status`
 
 Show current configuration and worktree status.
@@ -204,10 +179,10 @@ Configuration
   Config file:     ~/.config/wt/config.yaml
   Branch prefix:   dave
   Root:            /home/dave/projects
-  Template dir:    /home/dave/projects/.template (exists)
   Default profile: default
   Profiles:        default, focused
   Graphite:        available
+  Tmux session:    feature-auth (1 backgrounded)
 
 Current Worktree
 ────────────────────────────────────────
@@ -218,9 +193,49 @@ Current Worktree
   Tmux window:     active
 ```
 
+## Shell Completion
+
+Enable tab completion for commands, worktree names, and options.
+
+First, find where `wt` is installed:
+```bash
+which wt
+# e.g., /Users/dave/projects/wt/.venv/bin/wt
+```
+
+Use the same directory for `register-python-argcomplete`.
+
+### Zsh
+
+Add to `~/.zshrc`:
+```zsh
+autoload -Uz compinit && compinit
+eval "$(/path/to/.venv/bin/register-python-argcomplete wt)"
+```
+
+### Bash
+
+Add to `~/.bashrc`:
+```bash
+eval "$(/path/to/.venv/bin/register-python-argcomplete wt)"
+```
+
+### Fish
+
+Run once:
+```fish
+/path/to/.venv/bin/register-python-argcomplete --shell fish wt > ~/.config/fish/completions/wt.fish
+```
+
+After setup, tab completion works for:
+- Subcommands (`wt <tab>` → `go`, `list`, `fg`, etc.)
+- Worktree names (`wt feature/<tab>` → existing worktrees)
+- Session names (`wt fg <tab>` → backgrounded sessions)
+- Profile names (`wt go --profile <tab>` → available profiles)
+
 ## Interactive Mode
 
-When `wt open`, `wt fg`, or `wt switch` are invoked without arguments, an interactive picker is shown:
+When `wt go` or `wt fg` are invoked without arguments, an interactive picker is shown:
 
 - **j/k** or arrow keys to navigate
 - **/** to filter by typing

@@ -10,7 +10,10 @@ from typing import Any
 import yaml
 
 
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "wt" / "config.yaml"
+DEFAULT_CONFIG_PATHS = [
+    Path.home() / ".config" / "wt" / "config.yaml",
+    Path.home() / ".config" / "wt" / "config.yml",
+]
 
 DEFAULT_PROFILE = {
     "session_name": "{{topic}}-{{name}}",
@@ -39,7 +42,6 @@ class Config:
     root: Path
     default_profile: str
     profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
-    template_dir: Path | None = None
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> Config:
@@ -57,9 +59,20 @@ class Config:
         """
         if config_path is None:
             env_path = os.environ.get("WT_CONFIG")
-            config_path = Path(env_path) if env_path else DEFAULT_CONFIG_PATH
-
-        config_path = config_path.expanduser()
+            if env_path:
+                config_path = Path(env_path).expanduser()
+            else:
+                # Try default paths in order
+                for default_path in DEFAULT_CONFIG_PATHS:
+                    if default_path.exists():
+                        config_path = default_path
+                        break
+                else:
+                    raise ConfigError(
+                        f"Config file not found. Tried: {', '.join(str(p) for p in DEFAULT_CONFIG_PATHS)}"
+                    )
+        else:
+            config_path = config_path.expanduser()
 
         if not config_path.exists():
             raise ConfigError(f"Config file not found: {config_path}")
@@ -90,19 +103,11 @@ class Config:
         if "default" not in profiles:
             profiles["default"] = DEFAULT_PROFILE
 
-        # Template directory - defaults to {root}/.template
-        template_dir_str = data.get("template_dir")
-        if template_dir_str:
-            template_dir = Path(template_dir_str).expanduser()
-        else:
-            template_dir = root / ".template"
-
         return cls(
             branch_prefix=data["branch_prefix"],
             root=root,
             default_profile=default_profile,
             profiles=profiles,
-            template_dir=template_dir,
         )
 
     def branch_name(self, topic: str, name: str) -> str:

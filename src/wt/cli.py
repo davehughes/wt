@@ -5,8 +5,58 @@ from __future__ import annotations
 import argparse
 import sys
 
+import argcomplete
+from argcomplete.completers import ChoicesCompleter
+
 from wt import commands, git, graphite, tmux
 from wt.config import Config, ConfigError
+
+
+class WorktreeCompleter:
+    """Complete worktree names (topic/name format)."""
+
+    def __call__(self, prefix, **kwargs):
+        try:
+            config = Config.load()
+            worktrees = commands.cmd_list(config)
+            completions = [f"{wt['topic']}/{wt['name']}" for wt in worktrees]
+            # Filter by prefix if provided
+            if prefix:
+                completions = [c for c in completions if c.startswith(prefix)]
+            return completions
+        except Exception as e:
+            # Write to stderr for debugging (won't affect completions)
+            import sys
+            print(f"WorktreeCompleter error: {e}", file=sys.stderr)
+            return []
+
+
+class SessionCompleter:
+    """Complete backgrounded session names."""
+
+    def __call__(self, prefix, **kwargs):
+        try:
+            config = Config.load()
+            sessions = commands.cmd_sessions(config)
+            return [s["name"] for s in sessions]
+        except Exception:
+            return []
+
+
+class ProfileCompleter:
+    """Complete profile names."""
+
+    def __call__(self, prefix, **kwargs):
+        try:
+            config = Config.load()
+            return list(config.profiles.keys())
+        except Exception:
+            return []
+
+
+_worktree_completer = WorktreeCompleter()
+_session_completer = SessionCompleter()
+_profile_completer = ProfileCompleter()
 
 
 def main() -> int:
@@ -17,32 +67,41 @@ def main() -> int:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # wt open [name] [--profile <name>] [--from <branch>]
-    open_parser = subparsers.add_parser(
-        "open",
-        help="Open tmux window for a worktree (creates if needed)",
+    # wt go [name] [--profile <name>] [--from <branch>] [--close]
+    go_parser = subparsers.add_parser(
+        "go", help="Go to a worktree (creates if needed)"
     )
-    open_parser.add_argument(
+    go_parser.add_argument(
         "name",
         nargs="?",
         help="Worktree name in topic/name format. Interactive picker if omitted.",
-    )
-    open_parser.add_argument(
+    ).completer = _worktree_completer
+    go_parser.add_argument(
         "--profile",
         metavar="NAME",
         help="tmux profile name (defaults to config default)",
-    )
-    open_parser.add_argument(
+    ).completer = _profile_completer
+    go_parser.add_argument(
         "--from",
         dest="from_branch",
         metavar="BRANCH",
         help="Base branch if creating new worktree (defaults to current branch)",
     )
-    open_parser.set_defaults(func=handle_open)
+    go_parser.add_argument(
+        "--close",
+        action="store_true",
+        help="Close current window instead of backgrounding it",
+    )
+    go_parser.set_defaults(func=handle_go)
 
-    # wt list (alias: ls)
+    # wt list (alias: ls) [--bg]
     list_parser = subparsers.add_parser(
         "list", aliases=["ls"], help="List all managed worktrees"
+    )
+    list_parser.add_argument(
+        "--bg",
+        action="store_true",
+        help="Only show backgrounded worktrees",
     )
     list_parser.set_defaults(func=handle_list)
 
@@ -55,7 +114,7 @@ def main() -> int:
         "name",
         nargs="?",
         help="Worktree name in topic/name format (defaults to current)",
-    )
+    ).completer = _worktree_completer
     sync_parser.add_argument(
         "--all",
         action="store_true",
@@ -70,18 +129,6 @@ def main() -> int:
     )
     close_parser.set_defaults(func=handle_close)
 
-    # wt link [name]
-    link_parser = subparsers.add_parser(
-        "link",
-        help="Link template directory contents into a worktree",
-    )
-    link_parser.add_argument(
-        "name",
-        nargs="?",
-        help="Worktree name in topic/name format (defaults to current)",
-    )
-    link_parser.set_defaults(func=handle_link)
-
     # wt status
     status_parser = subparsers.add_parser(
         "status", help="Show config and current worktree status"
@@ -93,12 +140,6 @@ def main() -> int:
         "config-template", help="Print a configuration template"
     )
     config_template_parser.set_defaults(func=handle_config_template, requires_config=False)
-
-    # wt sessions
-    sessions_parser = subparsers.add_parser(
-        "sessions", help="List backgrounded worktree windows"
-    )
-    sessions_parser.set_defaults(func=handle_sessions)
 
     # wt bg
     bg_parser = subparsers.add_parser("bg", help="Send current window to background")
@@ -112,24 +153,16 @@ def main() -> int:
         "name",
         nargs="?",
         help="Worktree name (topic/name or topic-name format). Interactive picker if omitted.",
-    )
+    ).completer = _session_completer
     fg_parser.set_defaults(func=handle_fg)
 
-    # wt switch [name] [--close]
-    switch_parser = subparsers.add_parser(
-        "switch", help="Background current window and foreground another"
-    )
-    switch_parser.add_argument(
-        "name",
-        nargs="?",
-        help="Target worktree name. Interactive picker if omitted.",
-    )
-    switch_parser.add_argument(
-        "--close",
-        action="store_true",
-        help="Close current window instead of backgrounding it",
-    )
-    switch_parser.set_defaults(func=handle_switch)
+    # Disable default file completion - only use our custom completers
+    argcomplete.autocomplete(parser, default_completer=None)
+
+    # Check if first arg looks like a worktree name (topic/name) - if so, insert "go"
+    # This must be after argcomplete.autocomplete() which exits early during completion
+    if len(sys.argv) > 1 and "/" in sys.argv[1] and not sys.argv[1].startswith("-"):
+        sys.argv.insert(1, "go")
 
     args = parser.parse_args()
 
@@ -221,31 +254,19 @@ def resolve_session_name(
         return None
 
 
-def handle_open(config: Config, args: argparse.Namespace) -> int:
-    """Handle the 'open' command."""
-    name = resolve_worktree_name(config, args.name)
-    if name is None:
-        return 1
-
-    window, was_created = commands.cmd_open(
-        config=config,
-        name=name,
-        profile=args.profile,
-        from_branch=args.from_branch,
-    )
-    if was_created:
-        print(f"Created worktree and opened window: {window}")
-    else:
-        print(f"Opened window: {window}")
-    return 0
-
-
 def handle_list(config: Config, args: argparse.Namespace) -> int:
     """Handle the 'list' command."""
     worktrees = commands.cmd_list(config)
 
+    # Filter by --bg flag if specified
+    if args.bg:
+        worktrees = [wt for wt in worktrees if wt.get("is_backgrounded")]
+
     if not worktrees:
-        print("No worktrees found")
+        if args.bg:
+            print("No backgrounded worktrees")
+        else:
+            print("No worktrees found")
         return 0
 
     # Print header
@@ -254,7 +275,7 @@ def handle_list(config: Config, args: argparse.Namespace) -> int:
 
     for wt in worktrees:
         name = f"{wt['topic']}/{wt['name']}"
-        branch = wt.get("branch", "")
+        branch = wt.get("branch") or ""
 
         # Show warning if branch doesn't match expected
         if branch and not wt.get("branch_matches"):
@@ -291,22 +312,6 @@ def handle_sync(config: Config, args: argparse.Namespace) -> int:
     return 0
 
 
-def handle_link(config: Config, args: argparse.Namespace) -> int:
-    """Handle the 'link' command."""
-    actions = commands.cmd_link(
-        config=config,
-        name=args.name,
-    )
-
-    if not actions:
-        print("Nothing to link")
-    else:
-        for action in actions:
-            print(action)
-
-    return 0
-
-
 def handle_close(config: Config, args: argparse.Namespace) -> int:
     """Handle the 'close' command."""
     commands.cmd_close(config)
@@ -323,10 +328,6 @@ def handle_config_template(args: argparse.Namespace) -> int:
 branch_prefix: YOUR_NAME
 root: ~/projects
 default_profile: default
-
-# Template directory - contents are symlinked into each new worktree
-# Defaults to {root}/.template if not specified
-# template_dir: ~/projects/.template
 
 profiles:
   default:
@@ -382,12 +383,18 @@ def handle_status(config: Config, args: argparse.Namespace) -> int:
     print(f"  Config file:     {status.config_path}")
     print(f"  Branch prefix:   {status.branch_prefix}")
     print(f"  Root:            {status.root}")
-    if status.template_dir:
-        template_status = "exists" if status.template_dir.exists() else "not found"
-        print(f"  Template dir:    {status.template_dir} ({template_status})")
     print(f"  Default profile: {status.default_profile}")
     print(f"  Profiles:        {', '.join(status.available_profiles)}")
     print(f"  Graphite:        {'available' if status.graphite_available else 'not available'}")
+
+    # Tmux info as single line
+    if status.inside_tmux:
+        tmux_info = status.tmux_session
+        if status.backgrounded_count > 0:
+            tmux_info += f" ({status.backgrounded_count} backgrounded)"
+        print(f"  Tmux session:    {tmux_info}")
+    else:
+        print(f"  Tmux session:    not in tmux")
 
     print()
     print("Current Worktree")
@@ -414,23 +421,6 @@ def handle_status(config: Config, args: argparse.Namespace) -> int:
     return 0
 
 
-def handle_sessions(config: Config, args: argparse.Namespace) -> int:
-    """Handle the 'sessions' command."""
-    sessions = commands.cmd_sessions(config)
-
-    if not sessions:
-        print("No backgrounded sessions")
-        return 0
-
-    print(f"{'NAME':<30} {'TOPIC':<20} {'WORKTREE':<20}")
-    print("-" * 70)
-
-    for session in sessions:
-        print(f"{session['name']:<30} {session['topic']:<20} {session['wt_name']:<20}")
-
-    return 0
-
-
 def handle_bg(config: Config, args: argparse.Namespace) -> int:
     """Handle the 'bg' command."""
     window_name = commands.cmd_background(config)
@@ -449,19 +439,23 @@ def handle_fg(config: Config, args: argparse.Namespace) -> int:
     return 0
 
 
-def handle_switch(config: Config, args: argparse.Namespace) -> int:
-    """Handle the 'switch' command."""
-    name = resolve_session_name(
-        config,
-        args.name,
-        empty_message="No backgrounded sessions to switch to",
-        hint="wt switch <topic/name>",
-    )
+def handle_go(config: Config, args: argparse.Namespace) -> int:
+    """Handle the 'go' command."""
+    name = resolve_worktree_name(config, args.name)
     if name is None:
         return 1
 
-    window_target = commands.cmd_switch(config, name, close=args.close)
-    print(f"Switched to: {window_target}")
+    window_target, was_created = commands.cmd_go(
+        config,
+        name,
+        close=args.close,
+        profile=args.profile,
+        from_branch=args.from_branch,
+    )
+    if was_created:
+        print(f"Created worktree: {window_target}")
+    else:
+        print(f"Switched to: {window_target}")
     return 0
 
 
