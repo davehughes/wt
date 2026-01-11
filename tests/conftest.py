@@ -61,30 +61,27 @@ def temp_config(tmp_path: Path, temp_git_repo: Path) -> Generator[tuple[Path, Co
     config_dir = tmp_path / "config"
     config_dir.mkdir()
 
-    profiles_dir = config_dir / "profiles"
-    profiles_dir.mkdir()
+    # Use a dedicated worktrees directory to avoid conflicts with the git repo
+    worktrees_root = tmp_path / "worktrees"
+    worktrees_root.mkdir()
 
-    # Create default profile
-    default_profile = profiles_dir / "default.yaml"
-    default_profile.write_text("""session_name: "{{topic}}-{{name}}"
-windows:
-  - window_name: dev
-    layout: main-vertical
-    panes:
-      - shell_command:
-          - cd {{worktree_path}}
-      - shell_command:
-          - cd {{worktree_path}}
-          - echo "Claude placeholder"
-""")
+    config_path = config_dir / "config.yaml"
+    config_path.write_text(f"""branch_prefix: test
+root: "{worktrees_root}"
+default_profile: default
 
-    config_path = config_dir / "config.toml"
-    config_path.write_text(f"""branch_prefix = "test"
-root = "{temp_git_repo.parent}"
-default_profile = "default"
-
-[profiles_dir]
-path = "{profiles_dir}"
+profiles:
+  default:
+    session_name: "{{{{topic}}}}-{{{{name}}}}"
+    windows:
+      - window_name: dev
+        layout: main-vertical
+        panes:
+          - shell_command:
+              - cd {{{{worktree_path}}}}
+          - shell_command:
+              - cd {{{{worktree_path}}}}
+              - echo "Claude placeholder"
 """)
 
     # Set environment variable

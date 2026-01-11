@@ -8,8 +8,8 @@ version = "0.1.0"
 description = "Worktree session manager for git, graphite, tmux, and Claude Code"
 requires-python = ">=3.9"
 dependencies = [
-    "tmuxp>=1.28.0",
-    "tomli>=2.0.0;python_version<'3.11'",
+    "pyyaml>=6.0",
+    "simple-term-menu>=1.6.0",
 ]
 
 [project.optional-dependencies]

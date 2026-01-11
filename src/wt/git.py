@@ -207,10 +207,15 @@ def add_worktree(
     args = ["worktree", "add"]
 
     if create_branch:
-        args.extend(["-b", branch])
-        args.append(str(path))
-        if base:
-            args.append(base)
+        # Check if branch already exists - if so, just check it out
+        if branch_exists(branch, repo_path):
+            args.append(str(path))
+            args.append(branch)
+        else:
+            args.extend(["-b", branch])
+            args.append(str(path))
+            if base:
+                args.append(base)
     else:
         args.append(str(path))
         args.append(branch)

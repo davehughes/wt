@@ -3,16 +3,28 @@
 from __future__ import annotations
 
 import os
-import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
+import yaml
 
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "wt" / "config.toml"
+
+DEFAULT_CONFIG_PATH = Path.home() / ".config" / "wt" / "config.yaml"
+
+DEFAULT_PROFILE = {
+    "session_name": "{{topic}}-{{name}}",
+    "windows": [
+        {
+            "window_name": "dev",
+            "layout": "main-vertical",
+            "panes": [
+                {"shell_command": ["cd {{worktree_path}}"]},
+                {"shell_command": ["cd {{worktree_path}}", "claude --continue"]},
+            ],
+        }
+    ],
+}
 
 
 class ConfigError(Exception):
@@ -21,12 +33,13 @@ class ConfigError(Exception):
 
 @dataclass
 class Config:
-    """Application configuration loaded from TOML file."""
+    """Application configuration loaded from YAML file."""
 
     branch_prefix: str
     root: Path
     default_profile: str
-    profiles_dir: Path
+    profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
+    template_dir: Path | None = None
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> Config:
@@ -34,7 +47,7 @@ class Config:
 
         Args:
             config_path: Path to config file. If None, uses WT_CONFIG env var
-                        or falls back to ~/.config/wt/config.toml
+                        or falls back to ~/.config/wt/config.yaml
 
         Returns:
             Loaded Config instance
@@ -52,10 +65,13 @@ class Config:
             raise ConfigError(f"Config file not found: {config_path}")
 
         try:
-            with open(config_path, "rb") as f:
-                data = tomllib.load(f)
-        except tomllib.TOMLDecodeError as e:
-            raise ConfigError(f"Invalid TOML in {config_path}: {e}") from e
+            with open(config_path) as f:
+                data = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            raise ConfigError(f"Invalid YAML in {config_path}: {e}") from e
+
+        if data is None:
+            data = {}
 
         # Required fields
         if "branch_prefix" not in data:
@@ -69,32 +85,53 @@ class Config:
         # Optional fields with defaults
         default_profile = data.get("default_profile", "default")
 
-        profiles_dir_data = data.get("profiles_dir", {})
-        if isinstance(profiles_dir_data, dict):
-            profiles_dir = Path(profiles_dir_data.get("path", "~/.config/wt/profiles"))
+        # Load profiles - ensure "default" always exists
+        profiles = data.get("profiles", {})
+        if "default" not in profiles:
+            profiles["default"] = DEFAULT_PROFILE
+
+        # Template directory - defaults to {root}/.template
+        template_dir_str = data.get("template_dir")
+        if template_dir_str:
+            template_dir = Path(template_dir_str).expanduser()
         else:
-            profiles_dir = Path(profiles_dir_data)
-        profiles_dir = profiles_dir.expanduser()
+            template_dir = root / ".template"
 
         return cls(
             branch_prefix=data["branch_prefix"],
             root=root,
             default_profile=default_profile,
-            profiles_dir=profiles_dir,
+            profiles=profiles,
+            template_dir=template_dir,
         )
-
-    @property
-    def worktrees_dir(self) -> Path:
-        """Directory where worktrees are stored."""
-        return self.root / "worktrees"
 
     def branch_name(self, topic: str, name: str) -> str:
         """Generate full branch name from topic and name."""
         return f"{self.branch_prefix}/{topic}/{name}"
 
     def worktree_path(self, topic: str, name: str) -> Path:
-        """Generate worktree path from topic and name."""
-        return self.worktrees_dir / topic / name
+        """Generate worktree path from topic and name.
+
+        Worktrees are stored at $ROOT/<topic>/<name>.
+        """
+        return self.root / topic / name
+
+    def get_profile(self, name: str | None = None) -> dict[str, Any]:
+        """Get a profile by name.
+
+        Args:
+            name: Profile name (defaults to default_profile)
+
+        Returns:
+            Profile configuration dict
+
+        Raises:
+            ConfigError: If profile not found
+        """
+        profile_name = name or self.default_profile
+        if profile_name not in self.profiles:
+            raise ConfigError(f"Profile not found: {profile_name}")
+        return self.profiles[profile_name]
 
     def parse_worktree_name(self, name: str) -> tuple[str, str]:
         """Parse a topic/name string into (topic, name) tuple.
