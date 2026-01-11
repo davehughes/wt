@@ -280,28 +280,34 @@ def handle_list(config: Config, args: argparse.Namespace) -> int:
             print("No worktrees found")
         return 0
 
-    # Print header
-    print(f"{'NAME':<30} {'BRANCH':<40} {'WINDOW':<10}")
-    print("-" * 80)
+    # ANSI codes
+    DIM = "\033[2m"
+    RESET = "\033[0m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    RED = "\033[31m"
 
     for wt in worktrees:
-        name = f"{wt['topic']}/{wt['name']}"
-        branch = wt.get("branch") or ""
-
-        # Show warning if branch doesn't match expected
-        if branch and not wt.get("branch_matches"):
-            branch = f"{branch} (expected: {wt['expected_branch']})"
-        elif not wt.get("branch_exists"):
-            branch = f"(missing: {wt['expected_branch']})"
-
+        # Window status icon (left side)
         if wt.get("is_backgrounded"):
-            window = "background"
+            window_icon = f"{YELLOW}◐{RESET}"
         elif wt.get("has_window"):
-            window = "active"
+            window_icon = f"{GREEN}●{RESET}"
         else:
-            window = ""
+            window_icon = " "
 
-        print(f"{name:<30} {branch:<40} {window:<10}")
+        # Branch status icon (right side, only if there's a problem)
+        if not wt.get("branch_exists"):
+            branch_icon = f" {RED}✗{RESET}"
+        elif not wt.get("branch_matches"):
+            branch_icon = f" {YELLOW}!{RESET}"
+        else:
+            branch_icon = ""
+
+        # Format name with dim prefix
+        name = f"{DIM}{config.branch_prefix}/{RESET}{wt['topic']}/{wt['name']}"
+
+        print(f"{window_icon} {name}{branch_icon}")
 
     return 0
 
