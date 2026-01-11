@@ -28,7 +28,7 @@ profiles:
               - cd {{worktree_path}}
           - shell_command:
               - cd {{worktree_path}}
-              - claude --continue
+              - claude --continue || claude
 
   # Custom profile for focused coding
   focused:
@@ -163,6 +163,27 @@ wt fg feature-auth
 
 # Or use topic/name format
 wt fg feature/auth
+```
+
+### `wt pwd [<topic/name>]`
+
+Print the worktree path. Without arguments, uses the current tmux window name to determine the worktree.
+
+```bash
+# Print current worktree path
+wt pwd
+
+# Print specific worktree path
+wt pwd feature/auth
+
+# Change to worktree directory
+cd "$(wt pwd)"
+```
+
+**Tip**: Add a shell alias for convenience:
+```bash
+# Add to ~/.bashrc or ~/.zshrc
+alias wtcd='cd "$(wt pwd)"'
 ```
 
 ### `wt status`

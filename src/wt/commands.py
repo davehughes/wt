@@ -713,3 +713,42 @@ def cmd_status(config: Config, config_path: str | None = None) -> StatusInfo:
     status.backgrounded_count = len(backgrounded)
 
     return status
+
+
+def cmd_pwd(config: Config, name: str | None = None) -> Path:
+    """Get the worktree path for a worktree.
+
+    Args:
+        config: Configuration
+        name: Worktree name (topic/name format). If None, detect from tmux window name.
+
+    Returns:
+        Path to the worktree
+
+    Raises:
+        ConfigError: If not in a wt-managed window or worktree not found
+    """
+    if name is not None:
+        # Explicit worktree specified
+        topic, wt_name = config.parse_worktree_name(name)
+    else:
+        # Detect from current tmux window name
+        if not tmux.is_inside_tmux():
+            raise ConfigError("Not inside tmux. Specify a worktree name: wt pwd <topic/name>")
+
+        window_info = tmux.get_current_window_info()
+        if window_info is None:
+            raise ConfigError("Could not get current window info")
+
+        window_name = window_info["window_name"]
+        # Parse topic-name format (first hyphen is separator)
+        if "-" not in window_name:
+            raise ConfigError(f"Window '{window_name}' is not a wt-managed window")
+
+        topic, wt_name = window_name.split("-", 1)
+
+    worktree_path = config.worktree_path(topic, wt_name)
+    if not worktree_path.exists():
+        raise ConfigError(f"Worktree not found: {worktree_path}")
+
+    return worktree_path

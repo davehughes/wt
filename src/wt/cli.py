@@ -156,6 +156,17 @@ def main() -> int:
     ).completer = _session_completer
     fg_parser.set_defaults(func=handle_fg)
 
+    # wt pwd [name]
+    pwd_parser = subparsers.add_parser(
+        "pwd", help="Print worktree path (use with: cd \"$(wt pwd)\")"
+    )
+    pwd_parser.add_argument(
+        "name",
+        nargs="?",
+        help="Worktree name (topic/name format). Defaults to current window's worktree.",
+    ).completer = _worktree_completer
+    pwd_parser.set_defaults(func=handle_pwd)
+
     # Disable default file completion - only use our custom completers
     argcomplete.autocomplete(parser, default_completer=None)
 
@@ -341,7 +352,7 @@ profiles:
               - cd {{worktree_path}}
           - shell_command:
               - cd {{worktree_path}}
-              - claude --continue
+              - claude --continue || claude
 
   # Example: editor-focused profile
   editor:
@@ -369,7 +380,7 @@ profiles:
         panes:
           - shell_command:
               - cd {{worktree_path}}
-              - claude --continue
+              - claude --continue || claude
 """
     print(template)
     return 0
@@ -437,6 +448,13 @@ def handle_fg(config: Config, args: argparse.Namespace) -> int:
 
     window_target = commands.cmd_foreground(config, name)
     print(f"Foregrounded: {window_target}")
+    return 0
+
+
+def handle_pwd(config: Config, args: argparse.Namespace) -> int:
+    """Handle the 'pwd' command."""
+    path = commands.cmd_pwd(config, args.name)
+    print(path)
     return 0
 
 
