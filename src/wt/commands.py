@@ -66,9 +66,52 @@ def ensure_worktree(
     # Ensure parent directory exists
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Determine main repo path
+    repo_path = config.main_repo
+    if repo_path is None:
+        # Try to get repo from current directory
+        try:
+            repo_path = git.get_repo_root()
+        except git.GitError:
+            pass
+
+    if repo_path is None:
+        # Try to find main repo from an existing worktree
+        if config.root.exists():
+            for topic_dir in config.root.iterdir():
+                if not topic_dir.is_dir():
+                    continue
+                for wt_dir in topic_dir.iterdir():
+                    git_file = wt_dir / ".git"
+                    if git_file.is_file():
+                        # Parse gitdir from .git file to find main repo
+                        content = git_file.read_text().strip()
+                        if content.startswith("gitdir:"):
+                            gitdir = content[7:].strip()
+                            # gitdir points to .git/worktrees/name, main repo is parent of .git
+                            if "/worktrees/" in gitdir:
+                                main_git = gitdir.split("/worktrees/")[0]
+                                repo_path = Path(main_git).parent
+                                break
+                if repo_path:
+                    break
+
+    if repo_path is None:
+        raise ConfigError("Cannot determine main git repository. Set 'main_repo' in config or run from within a git repo.")
+
     # Determine base branch
     if from_branch is None:
-        from_branch = git.get_current_branch()
+        try:
+            from_branch = git.get_current_branch()
+        except git.GitError:
+            # Not in a git repo - use default branch from main repo
+            for default in ["main", "master"]:
+                if git.branch_exists(default, path=repo_path):
+                    from_branch = default
+                    break
+
+        if from_branch is None:
+            from_branch = "main"  # Last resort fallback
 
     # Create worktree (add_worktree handles existing branches gracefully)
     git.add_worktree(
@@ -76,6 +119,7 @@ def ensure_worktree(
         branch=branch_name,
         create_branch=True,
         base=from_branch,
+        repo_path=repo_path,
     )
 
     # Track with graphite if available
@@ -213,11 +257,23 @@ def cmd_list(config: Config) -> list[dict[str, str | Path | bool]]:
     if not config.root.exists():
         return result
 
-    # Get all git worktrees for cross-reference
+    # Get all git worktrees for cross-reference (single git call)
     try:
         git_worktrees = {str(wt.path): wt for wt in git.list_worktrees()}
     except git.GitError:
         git_worktrees = {}
+
+    # Get all branches upfront (single git call)
+    try:
+        all_branches = git.list_all_branches(path=config.main_repo or config.root)
+    except git.GitError:
+        all_branches = set()
+
+    # Get tmux window info upfront (minimize tmux calls)
+    current_session = tmux.get_current_session()
+    current_windows = {w["name"] for w in tmux.list_windows(current_session)} if current_session else set()
+    wt_windows = {w["name"] for w in tmux.list_windows("wt")} if tmux.session_exists("wt") else set()
+    bg_windows = {w["name"] for w in tmux.list_windows(BACKGROUND_SESSION)} if tmux.session_exists(BACKGROUND_SESSION) else set()
 
     # Scan root directory for topic/name structure
     for topic_dir in config.root.iterdir():
@@ -233,24 +289,18 @@ def cmd_list(config: Config) -> list[dict[str, str | Path | bool]]:
             expected_branch = config.branch_name(topic, name)
             git_wt = git_worktrees.get(str(wt_dir))
 
-            # Check branch status
-            has_branch = git.branch_exists(expected_branch, path=wt_dir) if wt_dir.exists() else False
+            # Check branch status using cached branch list
+            has_branch = expected_branch in all_branches
             actual_branch = None
             if git_wt and git_wt.branch:
                 actual_branch = git_wt.branch.replace("refs/heads/", "")
 
             window_name = f"{topic}-{name}"
-            # Check if window exists in current session, 'wt' session, or background session
-            current_session = tmux.get_current_session()
-            has_window = False
-            is_backgrounded = False
-            if current_session:
-                has_window = tmux.window_exists(window_name, current_session)
-            if not has_window and tmux.session_exists("wt"):
-                has_window = tmux.window_exists(window_name, "wt")
-            if not has_window and tmux.session_exists(BACKGROUND_SESSION):
-                is_backgrounded = tmux.window_exists(window_name, BACKGROUND_SESSION)
-                has_window = is_backgrounded
+            # Check windows using cached window lists
+            has_window = window_name in current_windows or window_name in wt_windows
+            is_backgrounded = window_name in bg_windows
+            if is_backgrounded:
+                has_window = True
 
             result.append({
                 "topic": topic,
@@ -436,15 +486,16 @@ def cmd_background(config: Config) -> str:
     return window_name
 
 
-def cmd_foreground(config: Config, name: str) -> str:
+def cmd_foreground(config: Config, name: str, target_session: str | None = None) -> str:
     """Bring a backgrounded worktree window to the foreground.
 
     Args:
         config: Application configuration
         name: Worktree name in "topic/name" format or window name "topic-name"
+        target_session: Session to move window to (defaults to current session)
 
     Returns:
-        The window target in the current session
+        The window target in the target session
 
     Raises:
         ConfigError: If window not found in background session
@@ -465,14 +516,15 @@ def cmd_foreground(config: Config, name: str) -> str:
         raise ConfigError(f"Window {window_name} not found in background session")
 
     # Determine target session
-    current_session = tmux.get_current_session()
-    if current_session:
-        target_session = current_session
-    else:
-        # Outside tmux - use or create 'wt' session
-        target_session = "wt"
-        if not tmux.session_exists(target_session):
-            tmux.create_session(target_session)
+    if target_session is None:
+        current_session = tmux.get_current_session()
+        if current_session and current_session != BACKGROUND_SESSION:
+            target_session = current_session
+        else:
+            # Outside tmux or in background session - use or create 'wt' session
+            target_session = "wt"
+            if not tmux.session_exists(target_session):
+                tmux.create_session(target_session)
 
     # Move window from background to target session
     source_target = f"{BACKGROUND_SESSION}:{window_name}"
@@ -515,6 +567,9 @@ def cmd_go(
     topic, wt_name = config.parse_worktree_name(name)
     window_name = f"{topic}-{wt_name}"
 
+    # Capture original session BEFORE backgrounding (after background, we're in wt-bg)
+    original_session = tmux.get_current_session()
+
     # Background/close current window if in a managed worktree and inside tmux
     if tmux.is_inside_tmux():
         current = get_current_worktree_info(config)
@@ -530,13 +585,12 @@ def cmd_go(
     # Check if target is backgrounded
     if tmux.session_exists(BACKGROUND_SESSION):
         if tmux.window_exists(window_name, BACKGROUND_SESSION):
-            window_target = cmd_foreground(config, name)
+            window_target = cmd_foreground(config, name, target_session=original_session)
             return window_target, False
 
-    # Check if target has an active window in current session
-    current_session = tmux.get_current_session()
-    if current_session and tmux.window_exists(window_name, current_session):
-        window_target = f"{current_session}:{window_name}"
+    # Check if target has an active window in original session
+    if original_session and tmux.window_exists(window_name, original_session):
+        window_target = f"{original_session}:{window_name}"
         tmux.select_window(window_target)
         return window_target, False
 

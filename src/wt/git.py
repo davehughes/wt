@@ -140,6 +140,22 @@ def branch_exists(branch: str, path: Path | None = None) -> bool:
     return result.returncode == 0
 
 
+def list_all_branches(path: Path | None = None) -> set[str]:
+    """Get all branch names in the repository.
+
+    Args:
+        path: Path within the repository
+
+    Returns:
+        Set of branch names
+    """
+    try:
+        result = run_git("branch", "--list", "--format=%(refname:short)", cwd=path)
+        return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    except GitError:
+        return set()
+
+
 def create_branch(branch: str, base: str | None = None, path: Path | None = None) -> None:
     """Create a new branch.
 

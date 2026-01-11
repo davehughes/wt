@@ -53,6 +53,7 @@ export WT_CONFIG=~/projects/myproject/.wt.yaml
 |--------|-------------|
 | `branch_prefix` | Prefix for branch names (e.g., `dave` creates branches like `dave/feature/auth`) |
 | `root` | Base directory for worktrees (worktrees stored at `$root/<topic>/<name>`) |
+| `main_repo` | (Optional) Path to main git repository. Auto-detected from existing worktrees if not set. |
 | `default_profile` | Default tmux profile name |
 | `profiles` | Dictionary of tmux profile configurations |
 

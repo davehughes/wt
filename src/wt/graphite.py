@@ -12,6 +12,9 @@ class GraphiteError(Exception):
 
 DEFAULT_TIMEOUT = 10  # seconds
 
+# Cache for is_available result
+_available_cache: bool | None = None
+
 
 def run_gt(
     *args: str,
@@ -55,11 +58,15 @@ def run_gt(
 
 
 def is_available() -> bool:
-    """Check if graphite CLI is available.
+    """Check if graphite CLI is available (cached).
 
     Returns:
         True if gt command is available
     """
+    global _available_cache
+    if _available_cache is not None:
+        return _available_cache
+
     try:
         subprocess.run(
             ["gt", "--version"],
@@ -67,9 +74,11 @@ def is_available() -> bool:
             check=True,
             timeout=5,
         )
-        return True
+        _available_cache = True
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-        return False
+        _available_cache = False
+
+    return _available_cache
 
 
 def branch_track(branch: str, cwd: Path | None = None) -> None:
@@ -82,7 +91,8 @@ def branch_track(branch: str, cwd: Path | None = None) -> None:
     Raises:
         GraphiteError: If tracking fails
     """
-    run_gt("branch", "track", branch, cwd=cwd)
+    # Use 'gt track' (newer) instead of deprecated 'gt branch track'
+    run_gt("track", branch, cwd=cwd)
 
 
 def branch_create(branch: str, cwd: Path | None = None) -> None:

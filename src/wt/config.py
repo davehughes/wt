@@ -42,6 +42,7 @@ class Config:
     root: Path
     default_profile: str
     profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
+    main_repo: Path | None = None
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> Config:
@@ -94,6 +95,7 @@ class Config:
 
         # Parse paths
         root = Path(data["root"]).expanduser()
+        main_repo = Path(data["main_repo"]).expanduser() if data.get("main_repo") else None
 
         # Optional fields with defaults
         default_profile = data.get("default_profile", "default")
@@ -108,6 +110,7 @@ class Config:
             root=root,
             default_profile=default_profile,
             profiles=profiles,
+            main_repo=main_repo,
         )
 
     def branch_name(self, topic: str, name: str) -> str:

@@ -326,7 +326,8 @@ def handle_config_template(args: argparse.Namespace) -> int:
 # Save this to ~/.config/wt/config.yaml or set WT_CONFIG to point to it
 
 branch_prefix: YOUR_NAME
-root: ~/projects
+root: ~/projects/worktrees
+# main_repo: ~/projects/myrepo  # Optional: main git repo (auto-detected from existing worktrees)
 default_profile: default
 
 profiles:
