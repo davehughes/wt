@@ -101,7 +101,7 @@ Gracefully close the current window. Sends `/exit` to Claude Code before closing
 wt close
 ```
 
-### `wt bg`
+### `wt bg` (alias: `yeet`)
 
 Send the current worktree window to the background. The window is moved to a background tmux session (`wt-bg`) where processes like Claude Code continue running.
 
@@ -109,7 +109,7 @@ Send the current worktree window to the background. The window is moved to a bac
 wt bg
 ```
 
-### `wt fg [<name>]`
+### `wt fg [<name>]` (alias: `yoink`)
 
 Bring a backgrounded worktree window to the foreground. The window is moved from the background session back to the current tmux session.
 

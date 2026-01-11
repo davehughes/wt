@@ -141,12 +141,12 @@ def main() -> int:
     config_template_parser = subparsers.add_parser("config-template", help="Print a configuration template")
     config_template_parser.set_defaults(func=handle_config_template, requires_config=False)
 
-    # wt bg
-    bg_parser = subparsers.add_parser("bg", help="Send current window to background")
+    # wt bg (alias: yeet)
+    bg_parser = subparsers.add_parser("bg", aliases=["yeet"], help="Send current window to background")
     bg_parser.set_defaults(func=handle_bg)
 
-    # wt fg [name]
-    fg_parser = subparsers.add_parser("fg", help="Bring a backgrounded window to foreground")
+    # wt fg [name] (alias: yoink)
+    fg_parser = subparsers.add_parser("fg", aliases=["yoink"], help="Bring a backgrounded window to foreground")
     fg_parser.add_argument(
         "name",
         nargs="?",
@@ -449,14 +449,14 @@ def handle_status(config: Config, args: argparse.Namespace) -> int:
 
 
 def handle_bg(config: Config, args: argparse.Namespace) -> int:
-    """Handle the 'bg' command."""
+    """Handle the 'bg' command (send window to background)."""
     window_name = commands.cmd_background(config)
     print(f"Backgrounded: {window_name}")
     return 0
 
 
 def handle_fg(config: Config, args: argparse.Namespace) -> int:
-    """Handle the 'fg' command."""
+    """Handle the 'fg' command (bring window to foreground)."""
     name = resolve_session_name(config, args.name)
     if name is None:
         return 1
