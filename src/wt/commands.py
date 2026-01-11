@@ -172,7 +172,7 @@ def cmd_open(
     worktree_path, was_created = ensure_worktree(config, name, from_branch)
 
     profile_config = config.get_profile(profile)
-    window_name = f"{topic}-{wt_name}"
+    window_name = f"{topic}/{wt_name}"
 
     # Get current session if in tmux
     current_session = tmux.get_current_session()
@@ -302,7 +302,7 @@ def cmd_list(config: Config) -> list[dict[str, str | Path | bool]]:
             if git_wt and git_wt.branch:
                 actual_branch = git_wt.branch.replace("refs/heads/", "")
 
-            window_name = f"{topic}-{name}"
+            window_name = f"{topic}/{name}"
             # Check windows using cached window lists
             has_window = window_name in current_windows or window_name in wt_windows
             is_backgrounded = window_name in bg_windows
@@ -424,7 +424,7 @@ def cmd_close(config: Config) -> None:
         raise ConfigError("Not in a managed worktree")
 
     topic, name = current
-    window_name = f"{topic}-{name}"
+    window_name = f"{topic}/{name}"
 
     # Find which session has this window
     current_session = tmux.get_current_session()
@@ -443,6 +443,44 @@ def cmd_close(config: Config) -> None:
 
     # Kill the window
     tmux.kill_window(window_target)
+
+
+def cmd_close_all_background(config: Config) -> list[str]:
+    """Close all backgrounded worktree windows gracefully.
+
+    Args:
+        config: Application configuration
+
+    Returns:
+        List of window names that were closed
+    """
+    if not tmux.session_exists(BACKGROUND_SESSION):
+        return []
+
+    closed = []
+    windows = tmux.list_windows(BACKGROUND_SESSION)
+
+    for window in windows:
+        window_name = window["name"]
+        # Skip placeholder window
+        if window_name == PLACEHOLDER_WINDOW:
+            continue
+
+        window_target = f"{BACKGROUND_SESSION}:{window_name}"
+
+        # Gracefully close Claude Code
+        tmux.close_claude_gracefully(window_target)
+
+        # Kill the window
+        tmux.kill_window(window_target)
+        closed.append(window_name)
+
+    # Kill the background session if it only has the placeholder left
+    remaining = tmux.list_windows(BACKGROUND_SESSION)
+    if len(remaining) <= 1:  # Only placeholder or empty
+        tmux.kill_session(BACKGROUND_SESSION)
+
+    return closed
 
 
 def cmd_sessions(config: Config) -> list[dict[str, str]]:
@@ -465,8 +503,8 @@ def cmd_sessions(config: Config) -> list[dict[str, str]]:
         # Skip placeholder window
         if window_name == PLACEHOLDER_WINDOW:
             continue
-        # Parse topic-name format
-        parts = window_name.split("-", 1)
+        # Parse topic/name format
+        parts = window_name.split("/", 1)
         if len(parts) == 2:
             topic, wt_name = parts
         else:
@@ -502,7 +540,7 @@ def cmd_background(config: Config) -> str:
         raise ConfigError("Not in a managed worktree")
 
     topic, name = current
-    window_name = f"{topic}-{name}"
+    window_name = f"{topic}/{name}"
 
     current_session = tmux.get_current_session()
     if current_session is None:
@@ -531,7 +569,7 @@ def cmd_foreground(config: Config, name: str, target_session: str | None = None)
 
     Args:
         config: Application configuration
-        name: Worktree name in "topic/name" format or window name "topic-name"
+        name: Worktree name in "topic/name" format
         target_session: Session to move window to (defaults to current session)
 
     Returns:
@@ -540,10 +578,10 @@ def cmd_foreground(config: Config, name: str, target_session: str | None = None)
     Raises:
         ConfigError: If window not found in background session
     """
-    # Convert topic/name to window name format if needed
+    # Parse and normalize the window name
     if "/" in name:
         topic, wt_name = config.parse_worktree_name(name)
-        window_name = f"{topic}-{wt_name}"
+        window_name = f"{topic}/{wt_name}"
     else:
         window_name = name
 
@@ -607,47 +645,208 @@ def cmd_go(
         if a new worktree was created
     """
     topic, wt_name = config.parse_worktree_name(name)
-    window_name = f"{topic}-{wt_name}"
+    target_window_name = f"{topic}/{wt_name}"
+    worktree_path = config.worktree_path(topic, wt_name)
 
-    # Capture original session BEFORE backgrounding (after background, we're in wt-bg)
-    original_session = tmux.get_current_session()
+    # ===== PHASE 1: Capture all state upfront before any mutations =====
+    inside_tmux = tmux.is_inside_tmux()
+    original_session = tmux.get_current_session() if inside_tmux else None
 
-    # Background/close current window if in a managed worktree and inside tmux
-    # Skip if --new flag is set (keep current window as-is)
-    if tmux.is_inside_tmux() and not new:
-        current = get_current_worktree_info(config)
-        if current is not None:
-            current_window_name = f"{current[0]}-{current[1]}"
-            # Don't background if we're switching to the same worktree
-            if current_window_name != window_name:
-                if close:
-                    cmd_close(config)
-                else:
-                    cmd_background(config)
+    # Current worktree info (for deciding whether to background)
+    current_worktree = get_current_worktree_info(config)
+    current_window_name = None
+    should_background_current = False
+    if current_worktree is not None:
+        current_window_name = f"{current_worktree[0]}-{current_worktree[1]}"
+        # Background if in tmux, not --new, and switching to different worktree
+        should_background_current = (
+            inside_tmux and
+            not new and
+            current_window_name != target_window_name
+        )
 
-    # Check if target is backgrounded
-    if tmux.session_exists(BACKGROUND_SESSION):
-        if tmux.window_exists(window_name, BACKGROUND_SESSION):
-            window_target = cmd_foreground(config, name, target_session=original_session)
-            return window_target, False
+    # Check where the target window exists (if anywhere)
+    target_in_background = (
+        tmux.session_exists(BACKGROUND_SESSION) and
+        tmux.window_exists(target_window_name, BACKGROUND_SESSION)
+    )
+    target_in_original_session = (
+        original_session is not None and
+        tmux.window_exists(target_window_name, original_session)
+    )
+    target_in_wt_session = (
+        tmux.session_exists("wt") and
+        tmux.window_exists(target_window_name, "wt")
+    )
 
-    # Check if target has an active window in original session
-    if original_session and tmux.window_exists(window_name, original_session):
-        window_target = f"{original_session}:{window_name}"
+    # Check if worktree exists on disk
+    worktree_exists = worktree_path.exists()
+
+    # ===== PHASE 2: Determine the action plan =====
+    # Plan: (action, details)
+    # Actions: "foreground", "switch", "switch_wt", "create_window", "create_worktree"
+    if target_in_background:
+        action = "foreground"
+    elif target_in_original_session:
+        action = "switch"
+    elif target_in_wt_session:
+        action = "switch_wt"
+    elif worktree_exists:
+        action = "create_window"
+    else:
+        action = "create_worktree"
+
+    # ===== PHASE 3: Execute the plan =====
+
+    # Step 1: Background/close current window if needed
+    if should_background_current:
+        if close:
+            cmd_close(config)
+        else:
+            cmd_background(config)
+
+    # Step 2: Execute the main action
+    if action == "foreground":
+        window_target = cmd_foreground(config, name, target_session=original_session)
+        return window_target, False
+
+    elif action == "switch":
+        window_target = f"{original_session}:{target_window_name}"
         tmux.select_window(window_target)
         return window_target, False
 
-    # Check if target has an active window in "wt" session
-    if tmux.session_exists("wt") and tmux.window_exists(window_name, "wt"):
-        window_target = f"wt:{window_name}"
-        if tmux.is_inside_tmux():
+    elif action == "switch_wt":
+        window_target = f"wt:{target_window_name}"
+        if inside_tmux:
             tmux.select_window(window_target)
         else:
             tmux.attach_session("wt")
         return window_target, False
 
-    # No existing window - use cmd_open to create worktree + window
-    return cmd_open(config, name, profile=profile, from_branch=from_branch)
+    elif action == "create_window":
+        # Worktree exists but no window - create window using pre-captured session
+        return _create_window_for_worktree(
+            config=config,
+            topic=topic,
+            wt_name=wt_name,
+            worktree_path=worktree_path,
+            profile=profile,
+            target_session=original_session,
+            inside_tmux=inside_tmux,
+        )
+
+    else:  # action == "create_worktree"
+        # Create worktree + window
+        return _create_worktree_and_window(
+            config=config,
+            name=name,
+            topic=topic,
+            wt_name=wt_name,
+            profile=profile,
+            from_branch=from_branch,
+            target_session=original_session,
+            inside_tmux=inside_tmux,
+        )
+
+
+def _create_window_for_worktree(
+    config: Config,
+    topic: str,
+    wt_name: str,
+    worktree_path: Path,
+    profile: str | None,
+    target_session: str | None,
+    inside_tmux: bool,
+) -> tuple[str, bool]:
+    """Create a tmux window for an existing worktree.
+
+    Uses pre-captured session info to avoid state inconsistencies.
+    """
+    profile_config = config.get_profile(profile)
+    window_name = f"{topic}/{wt_name}"
+
+    if inside_tmux and target_session:
+        # Create new window in the target session
+        window_target = tmux.launch_window(
+            profile=profile_config,
+            topic=topic,
+            name=wt_name,
+            worktree_path=worktree_path,
+            session_name=target_session,
+        )
+        return window_target, False
+    else:
+        # Outside tmux - create or use 'wt' session
+        session_name = "wt"
+        if not tmux.session_exists(session_name):
+            tmux.create_session(session_name, worktree_path)
+            tmux.run_tmux("rename-window", "-t", f"{session_name}:0", window_name)
+            window_target = f"{session_name}:{window_name}"
+
+            # Set up panes
+            profile_rendered = tmux.render_profile(profile_config, topic, wt_name, worktree_path)
+            windows = profile_rendered.get("windows", [])
+            if windows:
+                window_config = windows[0]
+                panes = window_config.get("panes", [])
+                layout = window_config.get("layout", "main-vertical")
+
+                if panes:
+                    for cmd in panes[0].get("shell_command", []):
+                        tmux.send_keys(window_target, cmd)
+
+                for i, pane_config in enumerate(panes[1:], start=1):
+                    tmux.split_window(window_target, start_directory=worktree_path)
+                    pane_target = f"{window_target}.{i}"
+                    for cmd in pane_config.get("shell_command", []):
+                        tmux.send_keys(pane_target, cmd)
+
+                if layout and len(panes) > 1:
+                    tmux.select_layout(window_target, layout)
+
+                tmux.select_pane(f"{window_target}.0")
+        else:
+            window_target = tmux.launch_window(
+                profile=profile_config,
+                topic=topic,
+                name=wt_name,
+                worktree_path=worktree_path,
+                session_name=session_name,
+            )
+
+        tmux.attach_session(session_name)
+        return window_target, False
+
+
+def _create_worktree_and_window(
+    config: Config,
+    name: str,
+    topic: str,
+    wt_name: str,
+    profile: str | None,
+    from_branch: str | None,
+    target_session: str | None,
+    inside_tmux: bool,
+) -> tuple[str, bool]:
+    """Create a new worktree and its tmux window.
+
+    Uses pre-captured session info to avoid state inconsistencies.
+    """
+    # Create the worktree
+    worktree_path, _ = ensure_worktree(config, name, from_branch)
+
+    # Create the window using pre-captured session info
+    window_target, _ = _create_window_for_worktree(
+        config=config,
+        topic=topic,
+        wt_name=wt_name,
+        worktree_path=worktree_path,
+        profile=profile,
+        target_session=target_session,
+        inside_tmux=inside_tmux,
+    )
+
+    return window_target, True
 
 
 @dataclass
@@ -768,7 +967,7 @@ def cmd_status(config: Config, config_path: str | None = None) -> StatusInfo:
             pass
 
         # Check tmux window
-        window_name = f"{topic}-{name}"
+        window_name = f"{topic}/{name}"
         current_session = tmux.get_current_session()
         has_window = False
         if current_session:
@@ -819,11 +1018,11 @@ def cmd_pwd(config: Config, name: str | None = None) -> Path:
             raise ConfigError("Could not get current window info")
 
         window_name = window_info["window_name"]
-        # Parse topic-name format (first hyphen is separator)
-        if "-" not in window_name:
+        # Parse topic/name format
+        if "/" not in window_name:
             raise ConfigError(f"Window '{window_name}' is not a wt-managed window")
 
-        topic, wt_name = window_name.split("-", 1)
+        topic, wt_name = window_name.split("/", 1)
 
     worktree_path = config.worktree_path(topic, wt_name)
     if not worktree_path.exists():

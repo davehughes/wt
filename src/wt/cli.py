@@ -127,6 +127,10 @@ def main() -> int:
     close_parser = subparsers.add_parser("close", help="Close current tmux window gracefully")
     close_parser.set_defaults(func=handle_close)
 
+    # wt shutdown
+    shutdown_parser = subparsers.add_parser("shutdown", help="Close all backgrounded windows gracefully")
+    shutdown_parser.set_defaults(func=handle_shutdown)
+
     # wt status [--output <format>]
     status_parser = subparsers.add_parser("status", help="Show config and current worktree status")
     status_parser.add_argument(
@@ -150,7 +154,7 @@ def main() -> int:
     fg_parser.add_argument(
         "name",
         nargs="?",
-        help="Worktree name (topic/name or topic-name format). Interactive picker if omitted.",
+        help="Worktree name (topic/name format). Interactive picker if omitted.",
     ).completer = _session_completer
     fg_parser.set_defaults(func=handle_fg)
 
@@ -237,7 +241,7 @@ def resolve_session_name(
 ) -> str | None:
     """Resolve session name, using interactive picker if name is None.
 
-    Returns the session name (topic-name format) or None if cancelled/error.
+    Returns the session name (topic/name format) or None if cancelled/error.
     """
     if name is not None:
         return name
@@ -327,6 +331,18 @@ def handle_close(config: Config, args: argparse.Namespace) -> int:
     """Handle the 'close' command."""
     commands.cmd_close(config)
     print("Window closed")
+    return 0
+
+
+def handle_shutdown(config: Config, args: argparse.Namespace) -> int:
+    """Handle the 'shutdown' command."""
+    closed = commands.cmd_close_all_background(config)
+    if not closed:
+        print("No backgrounded windows to close")
+    else:
+        for name in closed:
+            print(f"Closed: {name}")
+        print(f"Shut down {len(closed)} window(s)")
     return 0
 
 

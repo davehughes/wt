@@ -149,8 +149,10 @@ class Config:
     def parse_worktree_name(self, name: str) -> tuple[str, str]:
         """Parse a topic/name string into (topic, name) tuple.
 
+        Automatically strips branch_prefix if accidentally included.
+
         Args:
-            name: String in format "topic/name"
+            name: String in format "topic/name" (or "prefix/topic/name")
 
         Returns:
             Tuple of (topic, name)
@@ -158,6 +160,14 @@ class Config:
         Raises:
             ConfigError: If name format is invalid
         """
+        # Strip branch_prefix if user accidentally included it
+        # Only strip if the result still has topic/name format
+        prefix_with_slash = f"{self.branch_prefix}/"
+        if name.startswith(prefix_with_slash):
+            stripped = name[len(prefix_with_slash):]
+            if "/" in stripped:
+                name = stripped
+
         parts = name.split("/", 1)
         if len(parts) != 2:
             raise ConfigError(f"Invalid worktree name '{name}': expected format 'topic/name'")

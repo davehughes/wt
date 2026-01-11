@@ -117,10 +117,7 @@ Bring a backgrounded worktree window to the foreground. The window is moved from
 # Interactive picker
 wt fg
 
-# Bring back by window name
-wt fg feature-auth
-
-# Or use topic/name format
+# Bring back specific worktree
 wt fg feature/auth
 ```
 
