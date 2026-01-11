@@ -726,6 +726,27 @@ def kill_window(target: str, socket: str | None = None) -> None:
     run_tmux("kill-window", "-t", target, socket=socket, check=False)
 
 
+def rename_window(
+    old_name: str,
+    new_name: str,
+    session: str,
+    socket: str | None = None,
+) -> None:
+    """Rename a tmux window.
+
+    Args:
+        old_name: Current window name
+        new_name: New window name
+        session: Session containing the window
+        socket: Optional socket name
+    """
+    run_tmux(
+        "rename-window", "-t", f"{session}:{old_name}", new_name,
+        socket=socket,
+        check=False,
+    )
+
+
 def kill_session(session_name: str, socket: str | None = None) -> None:
     """Kill a tmux session.
 

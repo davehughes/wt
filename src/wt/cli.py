@@ -167,6 +167,19 @@ def main() -> int:
     ).completer = _worktree_completer
     pwd_parser.set_defaults(func=handle_pwd)
 
+    # wt rename [old] <new>
+    rename_parser = subparsers.add_parser(
+        "rename",
+        help="Rename worktree branch, directory, and tmux window",
+    )
+    rename_parser.add_argument(
+        "names",
+        nargs="+",
+        metavar="NAME",
+        help="[old] new - If one name given, infers old from current worktree. If two names given, first is old.",
+    ).completer = _worktree_completer
+    rename_parser.set_defaults(func=handle_rename)
+
     # wt hook-stop (called by Claude Code Stop hook)
     hook_stop_parser = subparsers.add_parser(
         "hook-stop",
@@ -509,6 +522,25 @@ def handle_pwd(config: Config, args: argparse.Namespace) -> int:
     """Handle the 'pwd' command."""
     path = commands.cmd_pwd(config, args.name)
     print(path)
+    return 0
+
+
+def handle_rename(config: Config, args: argparse.Namespace) -> int:
+    """Handle the 'rename' command."""
+    names = args.names
+
+    if len(names) == 1:
+        old_name = None
+        new_name = names[0]
+    elif len(names) == 2:
+        old_name = names[0]
+        new_name = names[1]
+    else:
+        print("Error: Expected 1 or 2 arguments: [old] new", file=sys.stderr)
+        return 1
+
+    result = commands.cmd_rename(config, old_name, new_name)
+    print(result)
     return 0
 
 

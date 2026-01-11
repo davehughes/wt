@@ -1137,3 +1137,90 @@ def cmd_hook_attention(config: Config, hook_data: dict) -> None:
         urgency=urgency,
         worktree=worktree,
     )
+
+
+def cmd_rename(config: Config, old_name: str | None, new_name: str) -> str:
+    """Rename a worktree's branch, directory, and tmux window.
+
+    Args:
+        config: Application configuration
+        old_name: Current worktree name (topic/name format), or None to infer from cwd/window
+        new_name: New worktree name (topic/name format)
+
+    Returns:
+        Success message
+
+    Raises:
+        ConfigError: If validation fails
+        git.GitError: If git operations fail
+    """
+    # Infer old_name if not provided
+    if old_name is None:
+        # Try to detect from current worktree
+        current = get_current_worktree_info(config)
+        if current is not None:
+            old_name = f"{current[0]}/{current[1]}"
+        else:
+            # Try to detect from tmux window name
+            if tmux.is_inside_tmux():
+                window_info = tmux.get_current_window_info()
+                if window_info and "/" in window_info["window_name"]:
+                    old_name = window_info["window_name"]
+
+        if old_name is None:
+            raise ConfigError("Cannot infer current worktree. Specify both old and new names.")
+
+    # Parse names
+    old_topic, old_wt_name = config.parse_worktree_name(old_name)
+    new_topic, new_wt_name = config.parse_worktree_name(new_name)
+
+    # Get paths and branch names
+    old_branch = config.branch_name(old_topic, old_wt_name)
+    new_branch = config.branch_name(new_topic, new_wt_name)
+    old_path = config.worktree_path(old_topic, old_wt_name)
+    new_path = config.worktree_path(new_topic, new_wt_name)
+    old_window = f"{old_topic}/{old_wt_name}"
+    new_window = f"{new_topic}/{new_wt_name}"
+
+    # Validation
+    if not old_path.exists():
+        raise ConfigError(f"Worktree does not exist: {old_path}")
+
+    if new_path.exists():
+        raise ConfigError(f"Target path already exists: {new_path}")
+
+    # Get main repo for git operations
+    main_repo = git.get_main_repo_path(old_path)
+
+    if not git.branch_exists(old_branch, path=main_repo):
+        raise ConfigError(f"Branch does not exist: {old_branch}")
+
+    if git.branch_exists(new_branch, path=main_repo):
+        raise ConfigError(f"Target branch already exists: {new_branch}")
+
+    # Execute rename operations
+
+    # 1. Rename git branch (in main repo)
+    git.rename_branch(old_branch, new_branch, path=main_repo)
+
+    # 2. Move worktree directory (handles git internal references)
+    new_path.parent.mkdir(parents=True, exist_ok=True)
+    git.move_worktree(old_path, new_path, path=main_repo)
+
+    # 3. Rename tmux windows in all sessions
+    current_session = tmux.get_current_session()
+    for session in [current_session, "wt", BACKGROUND_SESSION]:
+        if session and tmux.session_exists(session) and tmux.window_exists(old_window, session):
+            tmux.rename_window(old_window, new_window, session)
+
+    # 4. Update graphite if tracked (optional, non-fatal)
+    if graphite.is_available():
+        try:
+            if graphite.is_tracked(old_branch, cwd=main_repo):
+                # Graphite doesn't have rename - need to untrack old and track new
+                # For now, just note that graphite tracking needs manual update
+                pass  # User can run 'wt sync' to fix graphite tracking
+        except graphite.GraphiteError:
+            pass  # Non-fatal
+
+    return f"Renamed {old_name} → {new_name}"

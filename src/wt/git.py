@@ -201,6 +201,36 @@ def create_branch(branch: str, base: str | None = None, path: Path | None = None
     run_git(*args, cwd=path)
 
 
+def rename_branch(old_branch: str, new_branch: str, path: Path | None = None) -> None:
+    """Rename a git branch.
+
+    Args:
+        old_branch: Current branch name
+        new_branch: New branch name
+        path: Path within the repository
+
+    Raises:
+        GitError: If branch rename fails
+    """
+    run_git("branch", "-m", old_branch, new_branch, cwd=path)
+
+
+def move_worktree(old_path: Path, new_path: Path, path: Path | None = None) -> None:
+    """Move a worktree to a new location.
+
+    Uses git worktree move to properly update internal git references.
+
+    Args:
+        old_path: Current worktree path
+        new_path: New worktree path
+        path: Path within the repository (for running git command)
+
+    Raises:
+        GitError: If worktree move fails
+    """
+    run_git("worktree", "move", str(old_path), str(new_path), cwd=path)
+
+
 def list_worktrees(path: Path | None = None) -> list[Worktree]:
     """List all worktrees in the repository.
 
