@@ -165,6 +165,10 @@ If running in a non-interactive environment (piped output, no TTY), provide the 
 
 See [COMPLETIONS.md](COMPLETIONS.md) for shell completion setup instructions.
 
+## Claude Code Hooks
+
+wt can send notifications when Claude finishes working or needs attention (permissions, idle). See [HOOKS.md](HOOKS.md) for setup instructions.
+
 ## Development
 
 ```bash

@@ -167,6 +167,20 @@ def main() -> int:
     ).completer = _worktree_completer
     pwd_parser.set_defaults(func=handle_pwd)
 
+    # wt hook-stop (called by Claude Code Stop hook)
+    hook_stop_parser = subparsers.add_parser(
+        "hook-stop",
+        help="Handle Claude Code Stop hook (reads JSON from stdin)",
+    )
+    hook_stop_parser.set_defaults(func=handle_hook_stop)
+
+    # wt hook-attention (called by Claude Code Notification hook)
+    hook_attention_parser = subparsers.add_parser(
+        "hook-attention",
+        help="Handle Claude Code Notification hook (reads JSON from stdin)",
+    )
+    hook_attention_parser.set_defaults(func=handle_hook_attention)
+
     # Disable default file completion - only use our custom completers
     argcomplete.autocomplete(parser, default_completer=None)
 
@@ -516,6 +530,34 @@ def handle_go(config: Config, args: argparse.Namespace) -> int:
         print(f"Created worktree: {window_target}")
     else:
         print(f"Switched to: {window_target}")
+    return 0
+
+
+def handle_hook_stop(config: Config, args: argparse.Namespace) -> int:
+    """Handle the 'hook-stop' command (Claude Code Stop hook)."""
+    import json
+
+    # Read JSON from stdin
+    try:
+        hook_data = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        hook_data = {}
+
+    commands.cmd_hook_stop(config, hook_data)
+    return 0
+
+
+def handle_hook_attention(config: Config, args: argparse.Namespace) -> int:
+    """Handle the 'hook-attention' command (Claude Code Notification hook)."""
+    import json
+
+    # Read JSON from stdin
+    try:
+        hook_data = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        hook_data = {}
+
+    commands.cmd_hook_attention(config, hook_data)
     return 0
 
 

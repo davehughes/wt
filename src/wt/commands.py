@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from wt import git, graphite, tmux
+from wt import git, graphite, notify, tmux
 from wt.config import Config, ConfigError
 
 # Background session for keeping worktree windows running
@@ -1040,3 +1040,82 @@ def cmd_pwd(config: Config, name: str | None = None) -> Path:
         raise ConfigError(f"Worktree not found: {worktree_path}")
 
     return worktree_path
+
+
+def _worktree_from_cwd(config: Config, cwd: str) -> str | None:
+    """Extract worktree name (topic/name) from a cwd path.
+
+    Args:
+        config: Application configuration
+        cwd: Current working directory from hook context
+
+    Returns:
+        Worktree name as "topic/name" or None if not in a managed worktree
+    """
+    cwd_path = Path(cwd).resolve()
+    root = config.root.resolve()
+
+    try:
+        rel_path = cwd_path.relative_to(root)
+        parts = rel_path.parts
+        if len(parts) >= 2:
+            return f"{parts[0]}/{parts[1]}"
+    except ValueError:
+        pass  # cwd is not under root
+
+    return None
+
+
+def cmd_hook_stop(config: Config, hook_data: dict) -> None:
+    """Handle Claude Code Stop hook.
+
+    Called when Claude finishes responding.
+
+    Args:
+        config: Application configuration
+        hook_data: JSON data from hook stdin
+    """
+    cwd = hook_data.get("cwd", "")
+    worktree = _worktree_from_cwd(config, cwd)
+
+    notify.notify(
+        title="Claude Code",
+        message="Finished",
+        urgency="normal",
+        worktree=worktree,
+    )
+
+
+def cmd_hook_attention(config: Config, hook_data: dict) -> None:
+    """Handle Claude Code Notification hook.
+
+    Called when Claude needs user attention (permission, idle, etc).
+
+    Args:
+        config: Application configuration
+        hook_data: JSON data from hook stdin
+    """
+    notification_type = hook_data.get("notification_type", "unknown")
+
+    # Skip idle_prompt - the Stop hook already handles "finished" notifications
+    if notification_type == "idle_prompt":
+        return
+
+    cwd = hook_data.get("cwd", "")
+    worktree = _worktree_from_cwd(config, cwd)
+    message = hook_data.get("message", "Needs attention")
+
+    # Determine urgency based on notification type
+    if notification_type == "permission_prompt":
+        urgency = "critical"
+        title = "Permission Required"
+    else:
+        urgency = "normal"
+        title = "Claude Code"
+
+    notify.notify(
+        title=title,
+        message=message,
+        urgency=urgency,
+        worktree=worktree,
+    )
