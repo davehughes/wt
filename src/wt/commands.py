@@ -264,15 +264,33 @@ def cmd_list(config: Config) -> list[dict[str, str | Path | bool]]:
     if not config.root.exists():
         return result
 
+    # Determine main repo path for git operations
+    # Priority: config.main_repo > detected from existing worktree
+    main_repo = config.main_repo
+    if not main_repo:
+        # Try to detect from any existing worktree
+        for topic_dir in config.root.iterdir():
+            if not topic_dir.is_dir():
+                continue
+            for wt_dir in topic_dir.iterdir():
+                if wt_dir.is_dir():
+                    try:
+                        main_repo = git.get_main_repo_path(wt_dir)
+                        break
+                    except git.GitError:
+                        continue
+            if main_repo:
+                break
+
     # Get all git worktrees for cross-reference (single git call)
     try:
-        git_worktrees = {str(wt.path): wt for wt in git.list_worktrees()}
+        git_worktrees = {str(wt.path): wt for wt in git.list_worktrees(main_repo)}
     except git.GitError:
         git_worktrees = {}
 
     # Get all branches upfront (single git call)
     try:
-        all_branches = git.list_all_branches(path=config.main_repo or config.root)
+        all_branches = git.list_all_branches(path=main_repo) if main_repo else set()
     except git.GitError:
         all_branches = set()
 
