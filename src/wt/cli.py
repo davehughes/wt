@@ -284,13 +284,31 @@ def handle_list(config: Config, args: argparse.Namespace) -> int:
     GREEN = "\033[32m"
     YELLOW = "\033[33m"
     RED = "\033[31m"
+    BLUE = "\033[34m"
 
     for wt in worktrees:
-        # Window status icon (left side)
+        # Window status icon (left side) - includes Claude status
+        claude_status = wt.get("claude_status")
         if wt.get("is_backgrounded"):
-            window_icon = f"{YELLOW}◐{RESET}"
+            # Backgrounded windows: show Claude status with half-circle
+            if claude_status == "idle":
+                window_icon = f"{GREEN}◐{RESET}"  # Green = idle
+            elif claude_status == "permission":
+                window_icon = f"{RED}◐{RESET}"  # Red = needs attention
+            elif claude_status == "working":
+                window_icon = f"{YELLOW}◐{RESET}"  # Yellow = working
+            else:
+                window_icon = f"{DIM}◐{RESET}"  # Dim = unknown/no Claude
         elif wt.get("has_window"):
-            window_icon = f"{GREEN}●{RESET}"
+            # Active windows: show Claude status with filled circle
+            if claude_status == "idle":
+                window_icon = f"{GREEN}●{RESET}"  # Green = idle
+            elif claude_status == "permission":
+                window_icon = f"{RED}●{RESET}"  # Red = needs attention
+            elif claude_status == "working":
+                window_icon = f"{YELLOW}●{RESET}"  # Yellow = working
+            else:
+                window_icon = f"{BLUE}●{RESET}"  # Blue = window but unknown Claude status
         else:
             window_icon = " "
 

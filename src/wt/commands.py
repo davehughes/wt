@@ -309,6 +309,18 @@ def cmd_list(config: Config) -> list[dict[str, str | Path | bool]]:
             if is_backgrounded:
                 has_window = True
 
+            # Get Claude status if window exists
+            claude_status = None
+            if has_window:
+                # Determine which session has the window
+                if is_backgrounded:
+                    window_target = f"{BACKGROUND_SESSION}:{window_name}"
+                elif window_name in wt_windows:
+                    window_target = f"wt:{window_name}"
+                else:
+                    window_target = f"{current_session}:{window_name}"
+                claude_status = tmux.get_claude_status(window_target)
+
             result.append({
                 "topic": topic,
                 "name": name,
@@ -319,6 +331,7 @@ def cmd_list(config: Config) -> list[dict[str, str | Path | bool]]:
                 "branch_matches": actual_branch == expected_branch,
                 "has_window": has_window,
                 "is_backgrounded": is_backgrounded,
+                "claude_status": claude_status,
             })
 
     return result

@@ -464,7 +464,7 @@ def list_panes(target: str, socket: str | None = None) -> list[dict[str, str]]:
         List of pane info dicts with keys: target, command
     """
     result = run_tmux(
-        "list-panes", "-t", target, "-a",
+        "list-panes", "-t", target,
         "-F", "#{session_name}:#{window_index}.#{pane_index}:#{pane_current_command}",
         socket=socket,
         check=False,
@@ -530,6 +530,107 @@ def close_claude_gracefully(
         if not remaining:
             break
         time.sleep(0.5)
+
+
+def capture_pane(
+    target: str,
+    lines: int = 10,
+    socket: str | None = None,
+) -> str:
+    """Capture the content of a tmux pane.
+
+    Args:
+        target: Pane target (session:window.pane)
+        lines: Number of lines from the end to capture
+        socket: Optional socket name
+
+    Returns:
+        Captured pane content as string
+    """
+    result = run_tmux(
+        "capture-pane", "-t", target, "-p", "-J",
+        socket=socket,
+        check=False,
+    )
+    if result.returncode != 0:
+        return ""
+
+    content = result.stdout
+    # Return last N lines
+    all_lines = content.splitlines()
+    return "\n".join(all_lines[-lines:]) if all_lines else ""
+
+
+def get_claude_status(
+    target: str,
+    socket: str | None = None,
+) -> str:
+    """Get the status of Claude Code in a window.
+
+    Inspects pane content to determine if Claude is:
+    - "idle": Waiting for user input (shows prompt)
+    - "working": Actively processing
+    - "permission": Waiting for permission
+    - "unknown": Claude not found or status unclear
+
+    Args:
+        target: Window target (session:window)
+        socket: Optional socket name
+
+    Returns:
+        Status string: "idle", "working", "permission", or "unknown"
+    """
+    claude_panes = find_claude_panes(target, socket)
+    if not claude_panes:
+        return "unknown"
+
+    # Check the first Claude pane found
+    pane_target = claude_panes[0]
+    content = capture_pane(pane_target, lines=15, socket=socket)
+
+    if not content:
+        return "unknown"
+
+    # Check last few lines for status indicators
+    lines = content.splitlines()
+    last_lines = lines[-5:] if len(lines) >= 5 else lines
+    last_content = "\n".join(last_lines)
+
+    # Check for idle indicators (prompt waiting for input)
+    # Claude shows ❯ prompt and "? for shortcuts" when waiting for input
+    if "? for shortcuts" in last_content:
+        return "idle"
+
+    # Check for the input prompt line: "❯ " at start of line with nothing after
+    for line in reversed(last_lines):
+        stripped = line.strip()
+        if stripped == "❯" or stripped.startswith("❯ "):
+            # Empty prompt or just the prompt character
+            if stripped == "❯" or len(stripped) <= 3:
+                return "idle"
+
+    # Check for permission prompts
+    permission_patterns = ["Allow", "Deny", "allow this", "approve"]
+    for pattern in permission_patterns:
+        if pattern.lower() in content.lower():
+            return "permission"
+
+    # Check for working indicators
+    working_patterns = [
+        "Thinking",
+        "Reading",
+        "Writing",
+        "Searching",
+        "Running",
+        "...",
+        "━",  # Progress bar character
+    ]
+    for pattern in working_patterns:
+        if pattern in content:
+            return "working"
+
+    # Default to working if Claude is present but status unclear
+    return "working"
 
 
 def move_window(
