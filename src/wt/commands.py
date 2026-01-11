@@ -783,27 +783,25 @@ def _create_window_for_worktree(
             tmux.run_tmux("rename-window", "-t", f"{session_name}:0", window_name)
             window_target = f"{session_name}:{window_name}"
 
-            # Set up panes
+            # Set up panes from profile
             profile_rendered = tmux.render_profile(profile_config, topic, wt_name, worktree_path)
-            windows = profile_rendered.get("windows", [])
-            if windows:
-                window_config = windows[0]
-                panes = window_config.get("panes", [])
-                layout = window_config.get("layout", "main-vertical")
+            panes = profile_rendered.get("panes", [])
+            layout = profile_rendered.get("layout", "main-vertical")
 
-                if panes:
-                    for cmd in panes[0].get("shell_command", []):
-                        tmux.send_keys(window_target, cmd)
+            if panes:
+                for cmd in panes[0].get("shell_command", []):
+                    tmux.send_keys(window_target, cmd)
 
-                for i, pane_config in enumerate(panes[1:], start=1):
-                    tmux.split_window(window_target, start_directory=worktree_path)
-                    pane_target = f"{window_target}.{i}"
-                    for cmd in pane_config.get("shell_command", []):
-                        tmux.send_keys(pane_target, cmd)
+            for i, pane_config in enumerate(panes[1:], start=1):
+                tmux.split_window(window_target, start_directory=worktree_path)
+                pane_target = f"{window_target}.{i}"
+                for cmd in pane_config.get("shell_command", []):
+                    tmux.send_keys(pane_target, cmd)
 
-                if layout and len(panes) > 1:
-                    tmux.select_layout(window_target, layout)
+            if layout and len(panes) > 1:
+                tmux.select_layout(window_target, layout)
 
+            if panes:
                 tmux.select_pane(f"{window_target}.0")
         else:
             window_target = tmux.launch_window(

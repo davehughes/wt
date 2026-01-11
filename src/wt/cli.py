@@ -358,46 +358,37 @@ trunk: main  # Primary branch for graphite (auto-detected if not set)
 # main_repo: ~/projects/myrepo  # Optional: main git repo (auto-detected from existing worktrees)
 default_profile: default
 
+# Profiles define the pane layout for worktree windows
+# Available variables: {{topic}}, {{name}}, {{worktree_path}}
 profiles:
   default:
-    session_name: "{{topic}}-{{name}}"
-    windows:
-      - window_name: dev
-        layout: main-vertical
-        panes:
-          - shell_command:
-              - cd {{worktree_path}}
-          - shell_command:
-              - cd {{worktree_path}}
-              - claude --continue || claude
+    layout: main-vertical
+    panes:
+      - shell_command:
+          - cd {{worktree_path}}
+      - shell_command:
+          - cd {{worktree_path}}
+          - claude --continue || claude
 
   # Example: editor-focused profile
   editor:
-    session_name: "{{topic}}-{{name}}"
-    windows:
-      - window_name: code
-        panes:
-          - shell_command:
-              - cd {{worktree_path}}
-              - $EDITOR .
+    panes:
+      - shell_command:
+          - cd {{worktree_path}}
+          - $EDITOR .
 
-  # Example: full development setup
+  # Example: three-pane layout
   full:
-    session_name: "{{topic}}-{{name}}"
-    windows:
-      - window_name: code
-        layout: main-horizontal
-        panes:
-          - shell_command:
-              - cd {{worktree_path}}
-              - $EDITOR .
-          - shell_command:
-              - cd {{worktree_path}}
-      - window_name: claude
-        panes:
-          - shell_command:
-              - cd {{worktree_path}}
-              - claude --continue || claude
+    layout: main-horizontal
+    panes:
+      - shell_command:
+          - cd {{worktree_path}}
+          - $EDITOR .
+      - shell_command:
+          - cd {{worktree_path}}
+      - shell_command:
+          - cd {{worktree_path}}
+          - claude --continue || claude
 """
     print(template)
     return 0

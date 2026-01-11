@@ -28,16 +28,13 @@ default_profile: default
 
 profiles:
   default:
-    session_name: "{{topic}}-{{name}}"
-    windows:
-      - window_name: dev
-        layout: main-vertical
-        panes:
-          - shell_command:
-              - cd {{worktree_path}}
-          - shell_command:
-              - cd {{worktree_path}}
-              - claude --continue || claude
+    layout: main-vertical
+    panes:
+      - shell_command:
+          - cd {{worktree_path}}
+      - shell_command:
+          - cd {{worktree_path}}
+          - claude --continue || claude
 ```
 
 ## Options
@@ -53,7 +50,7 @@ profiles:
 
 ## Profiles
 
-Profiles define how tmux windows are set up when you open a worktree. Each profile can have multiple windows, and each window can have multiple panes with different commands.
+Profiles define the pane layout for worktree windows. Each profile specifies a layout and a list of panes with their shell commands.
 
 ### Template Variables
 
@@ -70,16 +67,13 @@ These variables are available in all string values within a profile:
 ```yaml
 profiles:
   profile_name:
-    session_name: "{{topic}}-{{name}}"  # Used for window naming
-    windows:
-      - window_name: name              # Name shown in tmux
-        layout: main-vertical          # Pane layout
-        panes:
-          - shell_command:
-              - command1
-              - command2
-          - shell_command:
-              - command3
+    layout: main-vertical    # Pane layout (optional, defaults to main-vertical)
+    panes:
+      - shell_command:
+          - command1
+          - command2
+      - shell_command:
+          - command3
 ```
 
 ### Layouts
@@ -107,14 +101,11 @@ Then use it in your config:
 ```yaml
 profiles:
   custom:
-    session_name: "{{topic}}-{{name}}"
-    windows:
-      - window_name: dev
-        layout: "0a31,198x48,0,0{98x48,0,0,5,99x48,99,0[99x11,99,0,6,99x12,99,12,7,99x23,99,25,8]}"
-        panes:
-          - shell_command: [cd {{worktree_path}}]
-          - shell_command: [cd {{worktree_path}}]
-          - shell_command: [cd {{worktree_path}}]
+    layout: "0a31,198x48,0,0{98x48,0,0,5,99x48,99,0[99x11,99,0,6,99x12,99,12,7,99x23,99,25,8]}"
+    panes:
+      - shell_command: [cd {{worktree_path}}]
+      - shell_command: [cd {{worktree_path}}]
+      - shell_command: [cd {{worktree_path}}]
 ```
 
 #### Reusable Layouts with YAML Anchors
@@ -128,14 +119,11 @@ layouts:
 
 profiles:
   dev:
-    session_name: "{{topic}}-{{name}}"
-    windows:
-      - window_name: code
-        layout: *layout_vsplit
-        panes:
-          - shell_command: [cd {{worktree_path}}, $EDITOR .]
-          - shell_command: [cd {{worktree_path}}]
-          - shell_command: [cd {{worktree_path}}]
+    layout: *layout_vsplit
+    panes:
+      - shell_command: [cd {{worktree_path}}, $EDITOR .]
+      - shell_command: [cd {{worktree_path}}]
+      - shell_command: [cd {{worktree_path}}]
 ```
 
 Note: The `layouts` key is ignored by wt but allows you to define anchors at the top level.
@@ -146,71 +134,48 @@ Note: The `layouts` key is ignored by wt but allows you to define anchors at the
 
 ```yaml
 default:
-  session_name: "{{topic}}-{{name}}"
-  windows:
-    - window_name: dev
-      layout: main-vertical
-      panes:
-        - shell_command:
-            - cd {{worktree_path}}
-        - shell_command:
-            - cd {{worktree_path}}
-            - claude --continue || claude
+  layout: main-vertical
+  panes:
+    - shell_command:
+        - cd {{worktree_path}}
+    - shell_command:
+        - cd {{worktree_path}}
+        - claude --continue || claude
 ```
 
 #### Editor Focused
 
 ```yaml
 editor:
-  session_name: "{{topic}}-{{name}}"
-  windows:
-    - window_name: code
-      panes:
-        - shell_command:
-            - cd {{worktree_path}}
-            - $EDITOR .
+  panes:
+    - shell_command:
+        - cd {{worktree_path}}
+        - $EDITOR .
 ```
 
-#### Full Stack (Multiple Windows)
+#### Three-Pane Development
 
 ```yaml
-fullstack:
-  session_name: "{{topic}}-{{name}}"
-  windows:
-    - window_name: code
-      layout: main-vertical
-      panes:
-        - shell_command:
-            - cd {{worktree_path}}
-            - $EDITOR .
-        - shell_command:
-            - cd {{worktree_path}}
-    - window_name: servers
-      layout: even-horizontal
-      panes:
-        - shell_command:
-            - cd {{worktree_path}}
-            - npm run dev
-        - shell_command:
-            - cd {{worktree_path}}
-            - npm run watch:css
-    - window_name: claude
-      panes:
-        - shell_command:
-            - cd {{worktree_path}}
-            - claude --continue || claude
+full:
+  layout: main-horizontal
+  panes:
+    - shell_command:
+        - cd {{worktree_path}}
+        - $EDITOR .
+    - shell_command:
+        - cd {{worktree_path}}
+    - shell_command:
+        - cd {{worktree_path}}
+        - claude --continue || claude
 ```
 
 #### Minimal (Just a Shell)
 
 ```yaml
 minimal:
-  session_name: "{{topic}}-{{name}}"
-  windows:
-    - window_name: shell
-      panes:
-        - shell_command:
-            - cd {{worktree_path}}
+  panes:
+    - shell_command:
+        - cd {{worktree_path}}
 ```
 
 ### Using Profiles
@@ -222,5 +187,5 @@ Specify a profile when opening a worktree:
 wt feature/auth
 
 # Use specific profile
-wt feature/auth --profile fullstack
+wt feature/auth --profile full
 ```

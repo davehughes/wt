@@ -138,8 +138,8 @@ root: /tmp
 
         config = Config.load(config_path)
         profile = config.get_profile("default")
-        assert "session_name" in profile
-        assert "windows" in profile
+        assert "layout" in profile
+        assert "panes" in profile
 
     def test_custom_profile(self, tmp_path: Path) -> None:
         """Test loading a custom profile from config."""

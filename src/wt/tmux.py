@@ -372,7 +372,12 @@ def launch_window(
     """Launch a window from a profile configuration.
 
     Creates a new window with panes according to the profile.
-    Uses the first window definition from the profile.
+
+    Profile format:
+        layout: main-vertical
+        panes:
+          - shell_command: [cd {{worktree_path}}]
+          - shell_command: [cd {{worktree_path}}, claude]
 
     Args:
         profile: Profile configuration dict
@@ -386,17 +391,10 @@ def launch_window(
         Window target (session:window)
     """
     rendered = render_profile(profile, topic, name, worktree_path)
-    window_name = f"{topic}-{name}"
+    window_name = f"{topic}/{name}"
 
-    # Get the first window definition from profile
-    windows = rendered.get("windows", [])
-    if not windows:
-        # Simple case: just create an empty window
-        return create_window(window_name, session_name, worktree_path, socket)
-
-    window_config = windows[0]
-    layout = window_config.get("layout", "main-vertical")
-    panes = window_config.get("panes", [])
+    layout = rendered.get("layout", "main-vertical")
+    panes = rendered.get("panes", [])
 
     # Create the window
     window_target = create_window(window_name, session_name, worktree_path, socket)

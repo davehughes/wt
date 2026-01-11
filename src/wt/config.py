@@ -16,16 +16,10 @@ DEFAULT_CONFIG_PATHS = [
 ]
 
 DEFAULT_PROFILE = {
-    "session_name": "{{topic}}-{{name}}",
-    "windows": [
-        {
-            "window_name": "dev",
-            "layout": "main-vertical",
-            "panes": [
-                {"shell_command": ["cd {{worktree_path}}"]},
-                {"shell_command": ["cd {{worktree_path}}", "claude --continue"]},
-            ],
-        }
+    "layout": "main-vertical",
+    "panes": [
+        {"shell_command": ["cd {{worktree_path}}"]},
+        {"shell_command": ["cd {{worktree_path}}", "claude --continue"]},
     ],
 }
 
