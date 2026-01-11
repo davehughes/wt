@@ -108,6 +108,34 @@ def get_repo_root(path: Path | None = None) -> Path:
     return Path(result.stdout.strip())
 
 
+def get_main_repo_path(path: Path | None = None) -> Path:
+    """Get the main repository path (resolves worktrees to their main repo).
+
+    For a worktree, returns the main repo's working directory.
+    For a main repo, returns its root.
+
+    Args:
+        path: Starting path (defaults to cwd)
+
+    Returns:
+        Path to main repository root
+
+    Raises:
+        GitError: If not in a git repository
+    """
+    # Get the common git directory (shared by all worktrees)
+    result = run_git("rev-parse", "--git-common-dir", cwd=path)
+    git_common_dir = Path(result.stdout.strip())
+
+    # The common dir is the .git directory of the main repo
+    # Its parent is the main repo working directory
+    if git_common_dir.name == ".git":
+        return git_common_dir.parent
+    else:
+        # Bare repo or unusual setup - fall back to repo root
+        return get_repo_root(path)
+
+
 def get_current_branch(path: Path | None = None) -> str | None:
     """Get the current branch name.
 

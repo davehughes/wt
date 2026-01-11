@@ -10,64 +10,25 @@ pip install -e .
 
 ## Configuration
 
-Create a config file at `~/.config/wt/config.yaml`:
+wt requires a configuration file. By default, it looks for `~/.config/wt/config.yaml`.
 
-```yaml
-branch_prefix: dave
-root: ~/projects
-default_profile: default
-
-profiles:
-  default:
-    session_name: "{{topic}}-{{name}}"
-    windows:
-      - window_name: dev
-        layout: main-vertical
-        panes:
-          - shell_command:
-              - cd {{worktree_path}}
-          - shell_command:
-              - cd {{worktree_path}}
-              - claude --continue || claude
-
-  # Custom profile for focused coding
-  focused:
-    session_name: "{{topic}}-{{name}}"
-    windows:
-      - window_name: code
-        panes:
-          - shell_command:
-              - cd {{worktree_path}}
-              - $EDITOR .
+```bash
+mkdir -p ~/.config/wt
+wt config-template > ~/.config/wt/config.yaml
+$EDITOR ~/.config/wt/config.yaml
 ```
 
-You can override the config location with the `WT_CONFIG` environment variable:
+Override the config location with `WT_CONFIG`:
 
 ```bash
 export WT_CONFIG=~/projects/myproject/.wt.yaml
 ```
 
-### Configuration Options
-
-| Option | Description |
-|--------|-------------|
-| `branch_prefix` | Prefix for branch names (e.g., `dave` creates branches like `dave/feature/auth`) |
-| `root` | Base directory for worktrees (worktrees stored at `$root/<topic>/<name>`) |
-| `main_repo` | (Optional) Path to main git repository. Auto-detected from existing worktrees if not set. |
-| `default_profile` | Default tmux profile name |
-| `profiles` | Dictionary of tmux profile configurations |
-
-### Profile Variables
-
-| Variable | Description |
-|----------|-------------|
-| `{{topic}}` | Worktree topic |
-| `{{name}}` | Worktree name |
-| `{{worktree_path}}` | Full path to the worktree |
+See [CONFIG.md](CONFIG.md) for detailed configuration options and profile examples.
 
 ## Commands
 
-### `wt [go] <topic>/<name> [--profile <name>] [--from <branch>] [--close]`
+### `wt [go] <topic>/<name> [--profile <name>] [--from <branch>] [--close | --new]`
 
 The primary command for working with worktrees. The `go` keyword is optional when providing a worktree name. This is the "go work on XYZ" command that transparently handles:
 
@@ -95,6 +56,9 @@ wt feature/auth --profile focused
 
 # Close current window instead of backgrounding
 wt feature/auth --close
+
+# Open in new window, keep current window as-is
+wt feature/auth --new
 ```
 
 When creating a new worktree:
@@ -113,11 +77,6 @@ wt list
 # List only backgrounded worktrees
 wt list --bg
 ```
-
-Output shows:
-- Worktree name
-- Branch status (including warnings for mismatched/missing branches)
-- Window status (active, background, or none)
 
 ### `wt sync [<topic>/<name>] [--all]`
 
@@ -194,67 +153,6 @@ Show current configuration and worktree status.
 wt status
 ```
 
-Example output:
-```
-Configuration
-────────────────────────────────────────
-  Config file:     ~/.config/wt/config.yaml
-  Branch prefix:   dave
-  Root:            /home/dave/projects
-  Default profile: default
-  Profiles:        default, focused
-  Graphite:        available
-  Tmux session:    feature-auth (1 backgrounded)
-
-Current Worktree
-────────────────────────────────────────
-  Name:            feature/auth
-  Path:            /home/dave/projects/feature/auth
-  Expected branch: dave/feature/auth
-  Current branch:  dave/feature/auth
-  Tmux window:     active
-```
-
-## Shell Completion
-
-Enable tab completion for commands, worktree names, and options.
-
-First, find where `wt` is installed:
-```bash
-which wt
-# e.g., /Users/dave/projects/wt/.venv/bin/wt
-```
-
-Use the same directory for `register-python-argcomplete`.
-
-### Zsh
-
-Add to `~/.zshrc`:
-```zsh
-autoload -Uz compinit && compinit
-eval "$(/path/to/.venv/bin/register-python-argcomplete wt)"
-```
-
-### Bash
-
-Add to `~/.bashrc`:
-```bash
-eval "$(/path/to/.venv/bin/register-python-argcomplete wt)"
-```
-
-### Fish
-
-Run once:
-```fish
-/path/to/.venv/bin/register-python-argcomplete --shell fish wt > ~/.config/fish/completions/wt.fish
-```
-
-After setup, tab completion works for:
-- Subcommands (`wt <tab>` → `go`, `list`, `fg`, etc.)
-- Worktree names (`wt feature/<tab>` → existing worktrees)
-- Session names (`wt fg <tab>` → backgrounded sessions)
-- Profile names (`wt go --profile <tab>` → available profiles)
-
 ## Interactive Mode
 
 When `wt go` or `wt fg` are invoked without arguments, an interactive picker is shown:
@@ -266,41 +164,9 @@ When `wt go` or `wt fg` are invoked without arguments, an interactive picker is 
 
 If running in a non-interactive environment (piped output, no TTY), provide the name explicitly.
 
-### `wt config-template`
+## Shell Completion
 
-Print a configuration template to stdout. Useful for initial setup:
-
-```bash
-# Create config directory and file
-mkdir -p ~/.config/wt
-wt config-template > ~/.config/wt/config.yaml
-
-# Then edit to customize
-$EDITOR ~/.config/wt/config.yaml
-```
-
-## Project Structure
-
-```
-wt/
-├── pyproject.toml
-├── src/wt/
-│   ├── __init__.py
-│   ├── cli.py           # CLI entry point (argparse)
-│   ├── commands.py      # High-level command implementations
-│   ├── config.py        # Config loading from WT_CONFIG
-│   ├── git.py           # Git worktree operations
-│   ├── graphite.py      # Graphite CLI wrapper
-│   ├── picker.py        # Interactive selection (simple-term-menu)
-│   └── tmux.py          # Tmux session/window management
-└── tests/
-    ├── conftest.py      # Test fixtures
-    ├── test_commands.py
-    ├── test_config.py
-    ├── test_git.py
-    ├── test_picker.py
-    └── test_tmux.py
-```
+See [COMPLETIONS.md](COMPLETIONS.md) for shell completion setup instructions.
 
 ## Development
 

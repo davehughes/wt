@@ -6,9 +6,8 @@ import argparse
 import sys
 
 import argcomplete
-from argcomplete.completers import ChoicesCompleter
 
-from wt import commands, git, graphite, tmux
+from wt import commands, git, graphite, picker, tmux
 from wt.config import Config, ConfigError
 
 
@@ -26,7 +25,7 @@ class WorktreeCompleter:
             return completions
         except Exception as e:
             # Write to stderr for debugging (won't affect completions)
-            import sys
+
             print(f"WorktreeCompleter error: {e}", file=sys.stderr)
             return []
 
@@ -68,9 +67,7 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # wt go [name] [--profile <name>] [--from <branch>] [--close]
-    go_parser = subparsers.add_parser(
-        "go", help="Go to a worktree (creates if needed)"
-    )
+    go_parser = subparsers.add_parser("go", help="Go to a worktree (creates if needed)")
     go_parser.add_argument(
         "name",
         nargs="?",
@@ -92,12 +89,15 @@ def main() -> int:
         action="store_true",
         help="Close current window instead of backgrounding it",
     )
+    go_parser.add_argument(
+        "--new",
+        action="store_true",
+        help="Open in new window without backgrounding or closing current",
+    )
     go_parser.set_defaults(func=handle_go)
 
     # wt list (alias: ls) [--bg]
-    list_parser = subparsers.add_parser(
-        "list", aliases=["ls"], help="List all managed worktrees"
-    )
+    list_parser = subparsers.add_parser("list", aliases=["ls"], help="List all managed worktrees")
     list_parser.add_argument(
         "--bg",
         action="store_true",
@@ -124,21 +124,21 @@ def main() -> int:
     sync_parser.set_defaults(func=handle_sync)
 
     # wt close
-    close_parser = subparsers.add_parser(
-        "close", help="Close current tmux window gracefully"
-    )
+    close_parser = subparsers.add_parser("close", help="Close current tmux window gracefully")
     close_parser.set_defaults(func=handle_close)
 
-    # wt status
-    status_parser = subparsers.add_parser(
-        "status", help="Show config and current worktree status"
+    # wt status [--output <format>]
+    status_parser = subparsers.add_parser("status", help="Show config and current worktree status")
+    status_parser.add_argument(
+        "--output", "-o",
+        choices=["text", "json", "yaml"],
+        default="text",
+        help="Output format (default: text)",
     )
     status_parser.set_defaults(func=handle_status)
 
     # wt config-template
-    config_template_parser = subparsers.add_parser(
-        "config-template", help="Print a configuration template"
-    )
+    config_template_parser = subparsers.add_parser("config-template", help="Print a configuration template")
     config_template_parser.set_defaults(func=handle_config_template, requires_config=False)
 
     # wt bg
@@ -146,9 +146,7 @@ def main() -> int:
     bg_parser.set_defaults(func=handle_bg)
 
     # wt fg [name]
-    fg_parser = subparsers.add_parser(
-        "fg", help="Bring a backgrounded window to foreground"
-    )
+    fg_parser = subparsers.add_parser("fg", help="Bring a backgrounded window to foreground")
     fg_parser.add_argument(
         "name",
         nargs="?",
@@ -157,9 +155,7 @@ def main() -> int:
     fg_parser.set_defaults(func=handle_fg)
 
     # wt pwd [name]
-    pwd_parser = subparsers.add_parser(
-        "pwd", help="Print worktree path (use with: cd \"$(wt pwd)\")"
-    )
+    pwd_parser = subparsers.add_parser("pwd", help='Print worktree path (use with: cd "$(wt pwd)")')
     pwd_parser.add_argument(
         "name",
         nargs="?",
@@ -207,7 +203,7 @@ def resolve_worktree_name(
     config: Config,
     name: str | None,
     empty_message: str = "No worktrees found",
-    hint: str = "wt open <topic/name>",
+    hint: str = "wt go <topic/name>",
 ) -> str | None:
     """Resolve worktree name, using interactive picker if name is None.
 
@@ -216,7 +212,6 @@ def resolve_worktree_name(
     if name is not None:
         return name
 
-    from wt import picker
 
     worktrees = commands.cmd_list(config)
     if not worktrees:
@@ -247,7 +242,6 @@ def resolve_session_name(
     if name is not None:
         return name
 
-    from wt import picker
 
     sessions = commands.cmd_sessions(config)
     if not sessions:
@@ -344,6 +338,7 @@ def handle_config_template(args: argparse.Namespace) -> int:
 
 branch_prefix: YOUR_NAME
 root: ~/projects/worktrees
+trunk: main  # Primary branch for graphite (auto-detected if not set)
 # main_repo: ~/projects/myrepo  # Optional: main git repo (auto-detected from existing worktrees)
 default_profile: default
 
@@ -394,13 +389,27 @@ profiles:
 
 def handle_status(config: Config, args: argparse.Namespace) -> int:
     """Handle the 'status' command."""
+    import json
+    import yaml
+
     status = commands.cmd_status(config)
 
+    if args.output == "json":
+        print(json.dumps(status.to_dict(), indent=2))
+        return 0
+
+    if args.output == "yaml":
+        print(yaml.dump(status.to_dict(), default_flow_style=False, sort_keys=False))
+        return 0
+
+    # Text output (default)
     print("Configuration")
     print("─" * 40)
     print(f"  Config file:     {status.config_path}")
     print(f"  Branch prefix:   {status.branch_prefix}")
     print(f"  Root:            {status.root}")
+    print(f"  Trunk:           {status.trunk or '(auto-detect)'}")
+    print(f"  Main repo:       {status.main_repo or '(auto-detect)'}")
     print(f"  Default profile: {status.default_profile}")
     print(f"  Profiles:        {', '.join(status.available_profiles)}")
     print(f"  Graphite:        {'available' if status.graphite_available else 'not available'}")
@@ -412,7 +421,7 @@ def handle_status(config: Config, args: argparse.Namespace) -> int:
             tmux_info += f" ({status.backgrounded_count} backgrounded)"
         print(f"  Tmux session:    {tmux_info}")
     else:
-        print(f"  Tmux session:    not in tmux")
+        print("  Tmux session:    not in tmux")
 
     print()
     print("Current Worktree")
@@ -474,6 +483,7 @@ def handle_go(config: Config, args: argparse.Namespace) -> int:
         config,
         name,
         close=args.close,
+        new=args.new,
         profile=args.profile,
         from_branch=args.from_branch,
     )

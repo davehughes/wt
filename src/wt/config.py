@@ -43,6 +43,7 @@ class Config:
     default_profile: str
     profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
     main_repo: Path | None = None
+    trunk: str | None = None  # Primary branch (main, master, etc.) - auto-detected if not set
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> Config:
@@ -105,12 +106,16 @@ class Config:
         if "default" not in profiles:
             profiles["default"] = DEFAULT_PROFILE
 
+        # Optional trunk branch (for graphite)
+        trunk = data.get("trunk")
+
         return cls(
             branch_prefix=data["branch_prefix"],
             root=root,
             default_profile=default_profile,
             profiles=profiles,
             main_repo=main_repo,
+            trunk=trunk,
         )
 
     def branch_name(self, topic: str, name: str) -> str:

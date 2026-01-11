@@ -11,6 +11,8 @@ from wt.config import Config, ConfigError
 
 # Background session for keeping worktree windows running
 BACKGROUND_SESSION = "wt-bg"
+# Placeholder window name (filtered from listings)
+PLACEHOLDER_WINDOW = "_placeholder"
 
 
 def get_current_worktree_info(config: Config) -> tuple[str, str] | None:
@@ -123,10 +125,15 @@ def ensure_worktree(
     )
 
     # Track with graphite if available
+    # Use main repo path for graphite (worktrees don't share graphite state)
     if graphite.is_available():
         try:
-            graphite.branch_track(branch_name, cwd=worktree_path)
-        except graphite.GraphiteError:
+            main_repo = git.get_main_repo_path(worktree_path)
+            # Ensure graphite is initialized before tracking
+            if graphite.ensure_initialized(cwd=main_repo, trunk=config.trunk):
+                # Use from_branch as parent since that's what we branched from
+                graphite.branch_track(branch_name, parent=from_branch, cwd=main_repo)
+        except (graphite.GraphiteError, git.GitError):
             # Non-fatal: graphite tracking can be done later with sync
             pass
 
@@ -273,7 +280,7 @@ def cmd_list(config: Config) -> list[dict[str, str | Path | bool]]:
     current_session = tmux.get_current_session()
     current_windows = {w["name"] for w in tmux.list_windows(current_session)} if current_session else set()
     wt_windows = {w["name"] for w in tmux.list_windows("wt")} if tmux.session_exists("wt") else set()
-    bg_windows = {w["name"] for w in tmux.list_windows(BACKGROUND_SESSION)} if tmux.session_exists(BACKGROUND_SESSION) else set()
+    bg_windows = {w["name"] for w in tmux.list_windows(BACKGROUND_SESSION) if w["name"] != PLACEHOLDER_WINDOW} if tmux.session_exists(BACKGROUND_SESSION) else set()
 
     # Scan root directory for topic/name structure
     for topic_dir in config.root.iterdir():
@@ -364,13 +371,41 @@ def cmd_sync(
             actions.append(f"Created branch {branch_name}")
 
         # Track with graphite
+        # Use main repo path for graphite (worktrees don't share graphite state)
         if graphite.is_available():
-            if not graphite.is_tracked(branch_name, cwd=worktree_path):
+            try:
+                main_repo = git.get_main_repo_path(worktree_path)
+            except git.GitError:
+                actions.append(f"Failed to get main repo for {topic}/{wt_name}")
+                continue
+
+            # Ensure graphite is initialized
+            if not graphite.is_initialized(cwd=main_repo):
+                if graphite.ensure_initialized(cwd=main_repo, trunk=config.trunk):
+                    actions.append("Initialized graphite")
+                else:
+                    actions.append("Failed to initialize graphite")
+                    continue
+
+            if not graphite.is_tracked(branch_name, cwd=main_repo):
                 try:
-                    graphite.branch_track(branch_name, cwd=worktree_path)
+                    # Try auto-detect parent first
+                    graphite.branch_track(branch_name, cwd=main_repo)
                     actions.append(f"Tracked {branch_name} with graphite")
-                except graphite.GraphiteError as e:
-                    actions.append(f"Failed to track {branch_name}: {e}")
+                except graphite.GraphiteError:
+                    # Auto-detect failed, try with trunk as parent
+                    # Use config.trunk if set, otherwise try main/master
+                    trunk_candidates = [config.trunk] if config.trunk else ["main", "master"]
+                    try:
+                        for trunk in trunk_candidates:
+                            if git.branch_exists(trunk, path=main_repo):
+                                graphite.branch_track(branch_name, parent=trunk, cwd=main_repo)
+                                actions.append(f"Tracked {branch_name} with graphite (parent: {trunk})")
+                                break
+                        else:
+                            actions.append(f"Failed to track {branch_name}: no trunk branch found")
+                    except graphite.GraphiteError as e:
+                        actions.append(f"Failed to track {branch_name}: {e}")
 
     return actions
 
@@ -427,6 +462,9 @@ def cmd_sessions(config: Config) -> list[dict[str, str]]:
     windows = tmux.list_windows(BACKGROUND_SESSION)
     for window in windows:
         window_name = window["name"]
+        # Skip placeholder window
+        if window_name == PLACEHOLDER_WINDOW:
+            continue
         # Parse topic-name format
         parts = window_name.split("-", 1)
         if len(parts) == 2:
@@ -478,6 +516,8 @@ def cmd_background(config: Config) -> str:
     if not tmux.session_exists(BACKGROUND_SESSION):
         # Create background session with a placeholder window
         tmux.create_session(BACKGROUND_SESSION)
+        # Rename the default window to placeholder (filtered from listings)
+        tmux.run_tmux("rename-window", "-t", f"{BACKGROUND_SESSION}:0", PLACEHOLDER_WINDOW)
 
     # Move window to background session
     source_target = f"{current_session}:{window_name}"
@@ -541,6 +581,7 @@ def cmd_go(
     config: Config,
     name: str,
     close: bool = False,
+    new: bool = False,
     profile: str | None = None,
     from_branch: str | None = None,
 ) -> tuple[str, bool]:
@@ -557,6 +598,7 @@ def cmd_go(
         config: Configuration
         name: Target worktree name (topic/name format)
         close: If True, close current window instead of backgrounding
+        new: If True, don't background or close the current window
         profile: Profile name for new windows (defaults to config default)
         from_branch: Base branch if creating new worktree
 
@@ -571,7 +613,8 @@ def cmd_go(
     original_session = tmux.get_current_session()
 
     # Background/close current window if in a managed worktree and inside tmux
-    if tmux.is_inside_tmux():
+    # Skip if --new flag is set (keep current window as-is)
+    if tmux.is_inside_tmux() and not new:
         current = get_current_worktree_info(config)
         if current is not None:
             current_window_name = f"{current[0]}-{current[1]}"
@@ -617,9 +660,11 @@ class StatusInfo:
     root: Path
     default_profile: str
     available_profiles: list[str]
+    trunk: str | None = None
+    main_repo: Path | None = None
 
     # Current worktree info (if in a managed worktree)
-    in_managed_worktree: bool
+    in_managed_worktree: bool = False
     topic: str | None = None
     name: str | None = None
     worktree_path: Path | None = None
@@ -634,6 +679,37 @@ class StatusInfo:
     tmux_window: str | None = None
     tmux_panes: list[str] | None = None
     backgrounded_count: int = 0
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON/YAML serialization."""
+        return {
+            "config": {
+                "config_path": self.config_path,
+                "branch_prefix": self.branch_prefix,
+                "root": str(self.root),
+                "trunk": self.trunk,
+                "main_repo": str(self.main_repo) if self.main_repo else None,
+                "default_profile": self.default_profile,
+                "available_profiles": self.available_profiles,
+            },
+            "graphite_available": self.graphite_available,
+            "tmux": {
+                "inside_tmux": self.inside_tmux,
+                "session": self.tmux_session,
+                "window": self.tmux_window,
+                "panes": self.tmux_panes,
+                "backgrounded_count": self.backgrounded_count,
+            },
+            "worktree": {
+                "in_managed_worktree": self.in_managed_worktree,
+                "topic": self.topic,
+                "name": self.name,
+                "path": str(self.worktree_path) if self.worktree_path else None,
+                "expected_branch": self.expected_branch,
+                "current_branch": self.current_branch,
+                "has_tmux_window": self.has_tmux_window,
+            } if self.in_managed_worktree else None,
+        }
 
 
 def cmd_status(config: Config, config_path: str | None = None) -> StatusInfo:
@@ -672,6 +748,8 @@ def cmd_status(config: Config, config_path: str | None = None) -> StatusInfo:
         root=config.root,
         default_profile=config.default_profile,
         available_profiles=list(config.profiles.keys()),
+        trunk=config.trunk,
+        main_repo=config.main_repo,
         in_managed_worktree=current is not None,
         graphite_available=graphite.is_available(),
     )
