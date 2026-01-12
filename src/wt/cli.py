@@ -186,6 +186,46 @@ def main() -> int:
     ).completer = _worktree_completer
     rename_parser.set_defaults(func=handle_rename)
 
+    # wt remove [name] (alias: rm)
+    remove_parser = subparsers.add_parser(
+        "remove",
+        aliases=["rm"],
+        help="Remove a worktree and optionally its branch",
+    )
+    remove_parser.add_argument(
+        "name",
+        nargs="?",
+        help="Worktree name (topic/name format). Interactive picker if omitted.",
+    ).completer = _worktree_completer
+    remove_parser.add_argument(
+        "--force", "-f",
+        action="store_true",
+        help="Force remove even if dirty or has open windows",
+    )
+    remove_parser.add_argument(
+        "--keep-branch",
+        action="store_true",
+        help="Keep the git branch after removing worktree",
+    )
+    remove_parser.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip confirmation prompt",
+    )
+    remove_parser.set_defaults(func=handle_remove)
+
+    # wt prune [--dry-run]
+    prune_parser = subparsers.add_parser(
+        "prune",
+        help="Clean up stale worktree entries and find orphaned branches",
+    )
+    prune_parser.add_argument(
+        "--dry-run", "-n",
+        action="store_true",
+        help="Show what would be done without making changes",
+    )
+    prune_parser.set_defaults(func=handle_prune)
+
     # wt hook-stop (called by Claude Code Stop hook)
     hook_stop_parser = subparsers.add_parser(
         "hook-stop",
@@ -569,6 +609,66 @@ def handle_rename(config: Config, args: argparse.Namespace) -> int:
 
     result = commands.cmd_rename(config, old_name, new_name)
     print(result)
+    return 0
+
+
+def handle_remove(config: Config, args: argparse.Namespace) -> int:
+    """Handle the 'remove' command."""
+    name = resolve_worktree_name(
+        config,
+        args.name,
+        empty_message="No worktrees to remove",
+        hint="wt remove <topic/name>",
+    )
+    if name is None:
+        return 1
+
+    # Confirm unless --yes or --force
+    if not args.yes and not args.force:
+        confirm = input(f"Remove worktree '{name}'? [y/N] ")
+        if confirm.lower() != "y":
+            print("Cancelled")
+            return 0
+
+    result = commands.cmd_remove(
+        config,
+        name,
+        force=args.force,
+        keep_branch=args.keep_branch,
+    )
+    print(result)
+    return 0
+
+
+def handle_prune(config: Config, args: argparse.Namespace) -> int:
+    """Handle the 'prune' command."""
+    if args.dry_run:
+        print("Dry run - no changes will be made")
+        print()
+
+    results = commands.cmd_prune(config, dry_run=args.dry_run)
+
+    # Report pruned entries
+    if results["pruned"]:
+        print("Pruned stale worktree entries:")
+        for entry in results["pruned"]:
+            print(f"  {entry}")
+    elif not args.dry_run:
+        print("No stale worktree entries to prune")
+
+    # Report orphaned branches
+    if results["orphaned_branches"]:
+        print()
+        print("Orphaned branches (no worktree):")
+        for branch in results["orphaned_branches"]:
+            print(f"  {branch}")
+        print()
+        print("Delete with:")
+        for branch in results["orphaned_branches"]:
+            print(f"  git branch -d {branch}")
+    else:
+        print("No orphaned branches found")
+
     return 0
 
 

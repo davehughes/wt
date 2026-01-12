@@ -121,6 +121,51 @@ wt fg
 wt fg feature/auth
 ```
 
+### `wt remove [<name>]` (alias: `rm`)
+
+Remove a worktree and its branch.
+
+```bash
+# Interactive picker
+wt remove
+
+# Remove specific worktree and branch
+wt remove feature/auth
+
+# Keep the branch after removing worktree
+wt remove feature/auth --keep-branch
+
+# Force remove (ignore uncommitted changes, close open windows)
+wt remove feature/auth --force
+
+# Skip confirmation prompt
+wt remove feature/auth --yes
+```
+
+### `wt prune [--dry-run]`
+
+Clean up stale worktree entries and find orphaned branches.
+
+```bash
+# Prune stale entries and report orphaned branches
+wt prune
+
+# Preview what would be done
+wt prune --dry-run
+```
+
+### `wt rename [<old>] <new>`
+
+Rename a worktree's branch, directory, and tmux window atomically.
+
+```bash
+# Rename current worktree
+wt rename feature/new-name
+
+# Rename specific worktree
+wt rename feature/old-name feature/new-name
+```
+
 ### `wt pwd [<topic/name>]`
 
 Print the worktree path. Without arguments, uses the current tmux window name to determine the worktree.

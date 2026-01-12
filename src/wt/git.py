@@ -329,3 +329,44 @@ def worktree_path_for_branch(branch: str, path: Path | None = None) -> Path | No
         if wt.branch == f"refs/heads/{branch}" or wt.branch == branch:
             return wt.path
     return None
+
+
+def has_uncommitted_changes(path: Path | None = None) -> bool:
+    """Check if worktree has uncommitted changes.
+
+    Args:
+        path: Path within the repository
+
+    Returns:
+        True if there are uncommitted changes
+    """
+    result = run_git("status", "--porcelain", cwd=path, check=False)
+    return bool(result.stdout.strip())
+
+
+def delete_branch(branch: str, force: bool = False, path: Path | None = None) -> None:
+    """Delete a git branch.
+
+    Args:
+        branch: Branch name to delete
+        force: Whether to force delete (use -D instead of -d)
+        path: Path within the repository
+
+    Raises:
+        GitError: If branch deletion fails
+    """
+    flag = "-D" if force else "-d"
+    run_git("branch", flag, branch, cwd=path)
+
+
+def prune_worktrees(path: Path | None = None) -> str:
+    """Run git worktree prune to clean up stale entries.
+
+    Args:
+        path: Path within the repository
+
+    Returns:
+        Output from git worktree prune -v
+    """
+    result = run_git("worktree", "prune", "-v", cwd=path)
+    return result.stdout.strip()

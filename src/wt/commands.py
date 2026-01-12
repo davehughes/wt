@@ -1224,3 +1224,146 @@ def cmd_rename(config: Config, old_name: str | None, new_name: str) -> str:
             pass  # Non-fatal
 
     return f"Renamed {old_name} → {new_name}"
+
+
+def cmd_remove(
+    config: Config,
+    name: str,
+    force: bool = False,
+    keep_branch: bool = False,
+) -> str:
+    """Remove a worktree and optionally its branch.
+
+    Args:
+        config: Application configuration
+        name: Worktree name in "topic/name" format
+        force: Whether to force removal (ignore uncommitted changes, close windows)
+        keep_branch: If True, keep the git branch after removing worktree
+
+    Returns:
+        Success message
+
+    Raises:
+        ConfigError: If validation fails
+        git.GitError: If git operations fail
+    """
+    topic, wt_name = config.parse_worktree_name(name)
+    worktree_path = config.worktree_path(topic, wt_name)
+    branch_name = config.branch_name(topic, wt_name)
+    window_name = f"{topic}/{wt_name}"
+
+    # Validation
+    if not worktree_path.exists():
+        raise ConfigError(f"Worktree not found: {worktree_path}")
+
+    # Check for open windows
+    current_session = tmux.get_current_session()
+    sessions_with_window = []
+    for session in [current_session, "wt", BACKGROUND_SESSION]:
+        if session and tmux.session_exists(session) and tmux.window_exists(window_name, session):
+            sessions_with_window.append(session)
+
+    if sessions_with_window and not force:
+        raise ConfigError(f"Window '{window_name}' is open. Close it first or use --force")
+
+    # Check for uncommitted changes
+    if git.has_uncommitted_changes(worktree_path) and not force:
+        raise ConfigError("Worktree has uncommitted changes. Commit them or use --force")
+
+    # Get main repo for git operations
+    main_repo = git.get_main_repo_path(worktree_path)
+
+    # Execute removal
+
+    # 1. Close windows gracefully and kill them
+    for session in sessions_with_window:
+        window_target = f"{session}:{window_name}"
+        tmux.close_claude_gracefully(window_target)
+        tmux.kill_window(window_target)
+
+    # 2. Remove git worktree
+    git.remove_worktree(worktree_path, force=force, repo_path=main_repo)
+
+    # 3. Delete branch (unless --keep-branch)
+    result_msg = f"Removed {name}"
+    if not keep_branch and git.branch_exists(branch_name, path=main_repo):
+        try:
+            git.delete_branch(branch_name, force=force, path=main_repo)
+            result_msg += f" and branch {branch_name}"
+        except git.GitError as e:
+            result_msg += f" (branch not deleted: {e})"
+
+    # 4. Clean up empty topic directory
+    topic_dir = worktree_path.parent
+    if topic_dir.exists() and not any(topic_dir.iterdir()):
+        topic_dir.rmdir()
+
+    return result_msg
+
+
+def cmd_prune(config: Config, dry_run: bool = False) -> dict:
+    """Prune stale worktree entries and find orphaned branches.
+
+    Args:
+        config: Application configuration
+        dry_run: If True, only report what would be done
+
+    Returns:
+        Dict with "pruned" (list of pruned entries) and "orphaned_branches" (list)
+
+    Raises:
+        ConfigError: If no main repo can be found
+    """
+    results = {"pruned": [], "orphaned_branches": []}
+
+    # Get main repo
+    main_repo = config.main_repo
+    if not main_repo:
+        # Try to detect from existing worktree
+        for topic_dir in config.root.iterdir():
+            if not topic_dir.is_dir():
+                continue
+            for wt_dir in topic_dir.iterdir():
+                if wt_dir.is_dir():
+                    try:
+                        main_repo = git.get_main_repo_path(wt_dir)
+                        break
+                    except git.GitError:
+                        continue
+            if main_repo:
+                break
+
+    if not main_repo:
+        raise ConfigError("Cannot find main git repository")
+
+    # 1. Prune stale git worktree entries
+    if not dry_run:
+        output = git.prune_worktrees(main_repo)
+        if output:
+            results["pruned"] = output.splitlines()
+
+    # 2. Find orphaned branches
+    all_branches = git.list_all_branches(path=main_repo)
+    prefix = f"{config.branch_prefix}/"
+
+    # Get existing worktree paths
+    worktrees = cmd_list(config)
+    existing_paths = {str(wt["path"]) for wt in worktrees}
+
+    for branch in all_branches:
+        if not branch.startswith(prefix):
+            continue
+
+        # Parse branch: prefix/topic/name
+        suffix = branch[len(prefix):]
+        parts = suffix.split("/", 1)
+        if len(parts) != 2:
+            continue
+
+        topic, wt_name = parts
+        expected_path = config.worktree_path(topic, wt_name)
+
+        if str(expected_path) not in existing_paths and not expected_path.exists():
+            results["orphaned_branches"].append(branch)
+
+    return results
