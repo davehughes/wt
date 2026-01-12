@@ -35,6 +35,11 @@ profiles:
       - shell_command:
           - cd {{worktree_path}}
           - claude --continue || claude
+
+# Optional: symlink shared files into each worktree
+symlinks:
+  ~/.env.myproject: .env
+  ~/projects/main/.vscode: .vscode
 ```
 
 ## Options
@@ -47,6 +52,7 @@ profiles:
 | `default_profile` | Yes | Name of the default tmux profile |
 | `profiles` | Yes | Dictionary of tmux profile configurations (at least one required) |
 | `main_repo` | No | Path to main git repository. Auto-detected from existing worktrees if not set. |
+| `symlinks` | No | Files to symlink into each worktree. See [Symlinks](#symlinks) below. |
 
 ## Profiles
 
@@ -189,3 +195,81 @@ wt feature/auth
 # Use specific profile
 wt feature/auth --profile full
 ```
+
+## Symlinks
+
+The `symlinks` option allows you to automatically create symlinks in each worktree, pointing to shared files or directories. This is useful for:
+
+- Environment files (`.env`) that should be shared across worktrees
+- IDE configuration (`.vscode/`, `.idea/`)
+- Local configuration files not tracked in git
+- Build caches or node_modules (if you want to share them)
+
+### Format
+
+```yaml
+symlinks:
+  /absolute/path/to/source: relative/target/in/worktree
+  ~/path/with/tilde: another/target
+```
+
+- **Source paths** (keys): Absolute paths to files/directories. Tilde (`~`) is expanded.
+- **Target paths** (values): Relative paths within the worktree. Must not be absolute.
+
+### Example
+
+```yaml
+symlinks:
+  ~/.env.myproject: .env
+  ~/projects/main/.vscode: .vscode
+  ~/projects/main/.claude/settings.local.json: .claude/settings.local.json
+```
+
+This configuration will:
+1. Symlink `~/.env.myproject` to `.env` in each worktree
+2. Symlink the main project's `.vscode` directory
+3. Symlink Claude Code local settings
+
+### Behavior
+
+Symlinks are created:
+- When a worktree is created (`wt go <new-worktree>`)
+- When syncing (`wt sync` or `wt sync --all`)
+
+Rules:
+- If the source doesn't exist, the symlink is skipped (with a message)
+- If a correct symlink already exists, it's left unchanged
+- If a symlink exists but points elsewhere, it's updated
+- If a regular file/directory exists at the target, it's **not** overwritten (warning issued)
+- Parent directories are created as needed
+
+### Use Cases
+
+#### Shared Environment File
+
+Keep one `.env` file and symlink it to all worktrees:
+
+```yaml
+symlinks:
+  ~/.env.myproject: .env
+```
+
+#### Shared IDE Settings
+
+Share VS Code settings across worktrees:
+
+```yaml
+symlinks:
+  ~/projects/main/.vscode: .vscode
+```
+
+#### Shared Node Modules (Advanced)
+
+Share `node_modules` to save disk space (use with caution):
+
+```yaml
+symlinks:
+  ~/projects/main/node_modules: node_modules
+```
+
+Note: This only works if all worktrees use the same dependencies.
