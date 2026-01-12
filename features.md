@@ -4,30 +4,6 @@ Potential improvements and new features for `wt`.
 
 ---
 
-## Consolidation
-
-### Merge `sessions` into `list`
-
-**Problem**: `wt list` already shows window status (active/background/none) in the WINDOW column. `wt sessions` duplicates this by showing only backgrounded windows.
-
-**Solution**: Add filtering flags to `list` and deprecate `sessions`.
-
-```bash
-wt list              # All worktrees (current behavior)
-wt list --bg         # Only backgrounded
-wt list --active     # Only with active windows
-wt list --no-window  # Only without windows
-wt list <topic>      # Filter by topic prefix
-```
-
-**Implementation**:
-- Add `--bg`, `--active`, `--no-window` flags to list parser
-- Add optional positional `topic` filter
-- Mark `sessions` as deprecated (print warning, keep working)
-- Eventually remove `sessions`
-
----
-
 ## New Commands
 
 ### `wt remove <name> [--force] [--keep-branch]`
@@ -51,32 +27,6 @@ wt remove feature/auth --force       # Force remove even if dirty/has window
 - Worktree has uncommitted changes: require `--force`
 - Branch has unpushed commits: warn, require `--force` to delete branch
 - Currently in the worktree directory: error, suggest cd out first
-
----
-
-### `wt path <name>`
-
-**Problem**: No easy way to get a worktree's path for use in scripts or shell commands.
-
-**Behavior**: Print the absolute path to the worktree directory.
-
-```bash
-wt path feature/auth
-# Output: /home/dave/projects/feature/auth
-
-# Use cases:
-cd $(wt path feature/auth)
-ls $(wt path feature/auth)/src
-code $(wt path feature/auth)
-```
-
-**With no argument**: Print current worktree path (if in one).
-
-```bash
-wt path  # /home/dave/projects/feature/auth (current worktree)
-```
-
-**Implementation**: Simple - just call `config.worktree_path(topic, name)` and print.
 
 ---
 
@@ -106,57 +56,6 @@ wt prune
 # Found 2 orphaned branches. Delete with: git branch -d <branch>
 ```
 
-**Future enhancement**: Interactive mode to select branches to delete.
-
----
-
-### `wt attach <name>`
-
-**Problem**: When outside tmux, `wt fg` creates/uses a "wt" session but doesn't attach to it. User must manually `tmux attach`.
-
-**Behavior**: Attach to the tmux session containing a worktree's window.
-
-```bash
-# Outside tmux:
-wt attach feature/auth
-# Attaches to the session containing the feature-auth window
-
-# Inside tmux:
-wt attach feature/auth
-# Switches to the window (same as wt fg if backgrounded, or just selects if active)
-```
-
-**Implementation**:
-- Find which session contains the window (active session or wt-bg)
-- If outside tmux: `tmux attach -t <session>`
-- If inside tmux: `tmux select-window -t <target>`
-
----
-
-### `wt rename <old> <new>`
-
-**Problem**: Renaming a worktree requires multiple manual steps:
-1. Rename the directory
-2. Update git worktree entry
-3. Rename the branch
-4. Rename tmux window (if exists)
-
-**Behavior**:
-```bash
-wt rename feature/auth feature/authentication
-# Renames:
-#   Directory: feature/auth -> feature/authentication
-#   Branch: dave/feature/auth -> dave/feature/authentication
-#   Window: feature-auth -> feature-authentication (if exists)
-```
-
-**Complexity**: High - need to handle:
-- Active windows (must close/reopen or use tmux rename-window)
-- Graphite branch tracking
-- In-progress work (uncommitted changes)
-
-**Recommendation**: Lower priority due to complexity. Users can create new + remove old.
-
 ---
 
 ### `wt run <name> <command...>`
@@ -182,35 +81,48 @@ def cmd_run(config: Config, name: str, command: list[str]) -> int:
 
 ---
 
-## Output Enhancements
+### `wt batch <operation>`
 
-### `--json` flag for machine-readable output
+**Problem**: Some operations would benefit from selecting multiple targets at once rather than running the command multiple times.
 
-**Problem**: Output is human-readable but not easily parseable by scripts.
-
-**Apply to**: `list`, `sessions`, `status`
+**Behavior**: Multi-select picker for batch operations.
 
 ```bash
-wt list --json
-# [{"topic": "feature", "name": "auth", "branch": "dave/feature/auth", ...}]
-
-wt status --json
-# {"config": {...}, "worktree": {...}}
+wt batch close     # Multi-select worktree windows to close gracefully
+wt batch sync      # Multi-select worktrees to sync branches
+wt batch fg        # Multi-select backgrounded windows to foreground
+wt batch shutdown  # Multi-select backgrounded windows to close
 ```
 
-**Implementation**: Add `--json` flag, use `json.dumps()` instead of print formatting.
+**Implementation**:
+- Add `pick_many()` to picker.py using simple-term-menu's `multi_select=True`
+- Show multi-select picker (space/tab to select, enter to confirm)
+- Execute operation on each selected item
+- Report results: "Closed 3 windows"
 
 ---
 
-## Interactive Enhancements
+## Enhancements
 
-### Interactive `list` with actions
+### Additional list filters
 
-**Problem**: Current flow requires multiple commands: `wt list`, then `wt open <name>`.
+Currently `wt list --bg` shows only backgrounded worktrees. Could add more filters:
 
-**Behavior**: `wt list -i` or `wt` (no command) opens interactive list where:
+```bash
+wt list --active     # Only with active (non-backgrounded) windows
+wt list --no-window  # Only without any window
+wt list <topic>      # Filter by topic prefix
+```
+
+---
+
+### Interactive list with actions
+
+**Problem**: Current flow requires multiple commands: `wt list`, then `wt go <name>`.
+
+**Behavior**: `wt list -i` opens interactive list where:
 - j/k to navigate
-- Enter to open
+- Enter to open (go)
 - d to remove
 - b to background (if active)
 - f to foreground (if backgrounded)
@@ -219,8 +131,6 @@ wt status --json
 
 **Complexity**: Medium - requires more sophisticated TUI than simple picker.
 
-**Recommendation**: Lower priority. Current `wt open` with picker covers main use case.
-
 ---
 
 ## Priority Summary
@@ -228,11 +138,8 @@ wt status --json
 | Priority | Feature | Effort |
 |----------|---------|--------|
 | High | `wt remove` | Medium |
-| High | `wt path` | Low |
-| High | List filtering (`--bg`, `--active`) | Low |
-| Medium | `wt prune` | Medium |
-| Medium | `wt attach` | Low |
-| Medium | `--json` output | Low |
-| Low | `wt rename` | High |
+| High | `wt prune` | Medium |
+| Medium | `wt batch` | Medium |
+| Medium | Additional list filters | Low |
 | Low | `wt run` | Low |
 | Low | Interactive list | Medium |

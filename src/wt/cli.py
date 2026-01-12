@@ -96,12 +96,18 @@ def main() -> int:
     )
     go_parser.set_defaults(func=handle_go)
 
-    # wt list (alias: ls) [--bg]
+    # wt list (alias: ls) [--bg] [--output <format>]
     list_parser = subparsers.add_parser("list", aliases=["ls"], help="List all managed worktrees")
     list_parser.add_argument(
         "--bg",
         action="store_true",
         help="Only show backgrounded worktrees",
+    )
+    list_parser.add_argument(
+        "--output", "-o",
+        choices=["text", "json", "yaml"],
+        default="text",
+        help="Output format (default: text)",
     )
     list_parser.set_defaults(func=handle_list)
 
@@ -292,6 +298,9 @@ def resolve_session_name(
 
 def handle_list(config: Config, args: argparse.Namespace) -> int:
     """Handle the 'list' command."""
+    import json
+    import yaml
+
     worktrees = commands.cmd_list(config)
 
     # Filter by --bg flag if specified
@@ -299,12 +308,31 @@ def handle_list(config: Config, args: argparse.Namespace) -> int:
         worktrees = [wt for wt in worktrees if wt.get("is_backgrounded")]
 
     if not worktrees:
-        if args.bg:
+        if args.output == "json":
+            print("[]")
+        elif args.output == "yaml":
+            print("[]")
+        elif args.bg:
             print("No backgrounded worktrees")
         else:
             print("No worktrees found")
         return 0
 
+    # JSON/YAML output
+    if args.output in ("json", "yaml"):
+        # Convert Path objects to strings for serialization
+        serializable = []
+        for wt in worktrees:
+            item = {k: (str(v) if hasattr(v, '__fspath__') else v) for k, v in wt.items()}
+            serializable.append(item)
+
+        if args.output == "json":
+            print(json.dumps(serializable, indent=2))
+        else:
+            print(yaml.dump(serializable, default_flow_style=False, sort_keys=False))
+        return 0
+
+    # Text output (default)
     # ANSI codes
     DIM = "\033[2m"
     RESET = "\033[0m"
