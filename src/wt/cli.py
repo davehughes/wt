@@ -503,11 +503,19 @@ profiles:
           - cd {{worktree_path}}
           - claude --continue || claude
 
-# Symlinks to create in each worktree (source -> relative target)
-# Useful for shared config files, .env files, etc.
-# symlinks:
-#   ~/.env.local: .env
-#   ~/projects/main/.vscode: .vscode
+  # Example: profile with symlinks for shared files
+  with-symlinks:
+    layout: main-vertical
+    panes:
+      - shell_command:
+          - cd {{worktree_path}}
+      - shell_command:
+          - cd {{worktree_path}}
+          - claude --continue || claude
+    # Symlinks to create in worktrees using this profile
+    symlinks:
+      ~/.env.local: .env
+      ~/projects/main/.vscode: .vscode
 """
     print(template)
     return 0

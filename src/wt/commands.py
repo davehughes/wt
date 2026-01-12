@@ -15,7 +15,7 @@ BACKGROUND_SESSION = "wt-bg"
 PLACEHOLDER_WINDOW = "_placeholder"
 
 
-def apply_symlinks(config: Config, worktree_path: Path) -> list[str]:
+def apply_symlinks(symlinks: dict[Path, Path], worktree_path: Path) -> list[str]:
     """Create configured symlinks in a worktree.
 
     Creates symlinks from source paths to relative targets within the worktree.
@@ -24,7 +24,7 @@ def apply_symlinks(config: Config, worktree_path: Path) -> list[str]:
     Existing files/directories are not overwritten (warning issued).
 
     Args:
-        config: Application configuration with symlinks mapping
+        symlinks: Mapping of source paths to relative target paths
         worktree_path: Path to the worktree directory
 
     Returns:
@@ -32,7 +32,7 @@ def apply_symlinks(config: Config, worktree_path: Path) -> list[str]:
     """
     actions = []
 
-    for source, relative_target in config.symlinks.items():
+    for source, relative_target in symlinks.items():
         target = worktree_path / relative_target
 
         # Check if source exists
@@ -93,6 +93,7 @@ def ensure_worktree(
     config: Config,
     name: str,
     from_branch: str | None = None,
+    profile: str | None = None,
 ) -> tuple[Path, bool]:
     """Ensure a worktree exists, creating it if necessary.
 
@@ -100,6 +101,7 @@ def ensure_worktree(
         config: Application configuration
         name: Worktree name in "topic/name" format
         from_branch: Base branch for new worktree (defaults to current branch)
+        profile: Profile name for symlinks (defaults to default_profile)
 
     Returns:
         Tuple of (worktree_path, was_created)
@@ -187,8 +189,10 @@ def ensure_worktree(
             # Non-fatal: graphite tracking can be done later with sync
             pass
 
-    # Apply configured symlinks
-    apply_symlinks(config, worktree_path)
+    # Apply configured symlinks from profile
+    symlinks = config.get_symlinks(profile)
+    if symlinks:
+        apply_symlinks(symlinks, worktree_path)
 
     return worktree_path, True
 
@@ -222,7 +226,7 @@ def cmd_open(
     topic, wt_name = config.parse_worktree_name(name)
 
     # Ensure worktree exists, creating if necessary
-    worktree_path, was_created = ensure_worktree(config, name, from_branch)
+    worktree_path, was_created = ensure_worktree(config, name, from_branch, profile)
 
     profile_config = config.get_profile(profile)
     window_name = f"{topic}/{wt_name}"
@@ -491,9 +495,11 @@ def cmd_sync(
                     except graphite.GraphiteError as e:
                         actions.append(f"Failed to track {branch_name}: {e}")
 
-        # Apply configured symlinks
-        symlink_actions = apply_symlinks(config, worktree_path)
-        actions.extend(symlink_actions)
+        # Apply configured symlinks (using default profile)
+        symlinks = config.get_symlinks()
+        if symlinks:
+            symlink_actions = apply_symlinks(symlinks, worktree_path)
+            actions.extend(symlink_actions)
 
     return actions
 
@@ -919,7 +925,7 @@ def _create_worktree_and_window(
     Uses pre-captured session info to avoid state inconsistencies.
     """
     # Create the worktree
-    worktree_path, _ = ensure_worktree(config, name, from_branch)
+    worktree_path, _ = ensure_worktree(config, name, from_branch, profile)
 
     # Create the window using pre-captured session info
     window_target, _ = _create_window_for_worktree(
