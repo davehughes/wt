@@ -38,6 +38,7 @@ class Config:
     profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
     main_repo: Path | None = None
     trunk: str | None = None  # Primary branch (main, master, etc.) - auto-detected if not set
+    symlinks: dict[Path, Path] = field(default_factory=dict)  # source -> relative target in worktree
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> Config:
@@ -103,6 +104,16 @@ class Config:
         # Optional trunk branch (for graphite)
         trunk = data.get("trunk")
 
+        # Parse symlinks: {source_path: relative_target}
+        symlinks_data = data.get("symlinks", {})
+        symlinks = {}
+        for source, target in symlinks_data.items():
+            source_path = Path(source).expanduser()
+            target_path = Path(target)  # Keep relative, don't expand
+            if target_path.is_absolute():
+                raise ConfigError(f"Symlink target must be relative: {target}")
+            symlinks[source_path] = target_path
+
         return cls(
             branch_prefix=data["branch_prefix"],
             root=root,
@@ -110,6 +121,7 @@ class Config:
             profiles=profiles,
             main_repo=main_repo,
             trunk=trunk,
+            symlinks=symlinks,
         )
 
     def branch_name(self, topic: str, name: str) -> str:

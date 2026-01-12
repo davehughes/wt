@@ -15,6 +15,56 @@ BACKGROUND_SESSION = "wt-bg"
 PLACEHOLDER_WINDOW = "_placeholder"
 
 
+def apply_symlinks(config: Config, worktree_path: Path) -> list[str]:
+    """Create configured symlinks in a worktree.
+
+    Creates symlinks from source paths to relative targets within the worktree.
+    Existing symlinks pointing to the correct target are left unchanged.
+    Existing symlinks pointing elsewhere are updated.
+    Existing files/directories are not overwritten (warning issued).
+
+    Args:
+        config: Application configuration with symlinks mapping
+        worktree_path: Path to the worktree directory
+
+    Returns:
+        List of actions taken (for reporting)
+    """
+    actions = []
+
+    for source, relative_target in config.symlinks.items():
+        target = worktree_path / relative_target
+
+        # Check if source exists
+        if not source.exists():
+            actions.append(f"Skipped {relative_target}: source {source} not found")
+            continue
+
+        # Ensure parent directory exists
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        # Handle existing target
+        if target.is_symlink():
+            current_target = target.resolve()
+            if current_target == source.resolve():
+                # Already correct
+                continue
+            else:
+                # Update symlink
+                target.unlink()
+                target.symlink_to(source)
+                actions.append(f"Updated symlink {relative_target} → {source}")
+        elif target.exists():
+            # Regular file or directory exists - don't overwrite
+            actions.append(f"Skipped {relative_target}: file already exists")
+        else:
+            # Create new symlink
+            target.symlink_to(source)
+            actions.append(f"Created symlink {relative_target} → {source}")
+
+    return actions
+
+
 def get_current_worktree_info(config: Config) -> tuple[str, str] | None:
     """Get topic/name for the current working directory if it's a managed worktree.
 
@@ -136,6 +186,9 @@ def ensure_worktree(
         except (graphite.GraphiteError, git.GitError):
             # Non-fatal: graphite tracking can be done later with sync
             pass
+
+    # Apply configured symlinks
+    apply_symlinks(config, worktree_path)
 
     return worktree_path, True
 
@@ -437,6 +490,10 @@ def cmd_sync(
                             actions.append(f"Failed to track {branch_name}: no trunk branch found")
                     except graphite.GraphiteError as e:
                         actions.append(f"Failed to track {branch_name}: {e}")
+
+        # Apply configured symlinks
+        symlink_actions = apply_symlinks(config, worktree_path)
+        actions.extend(symlink_actions)
 
     return actions
 
