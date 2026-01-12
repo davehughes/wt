@@ -598,16 +598,20 @@ def get_claude_status(
 
     # Check for idle indicators (prompt waiting for input)
     # Claude shows ❯ prompt and "? for shortcuts" when waiting for input
-    if "? for shortcuts" in last_content:
-        return "idle"
+    idle_indicators = [
+        "? for shortcuts",  # Help hint shown when idle
+        "↵ send",           # Waiting for user to press enter
+        "⏵⏵ accept edits",  # Waiting for user to accept/reject edits
+    ]
+    for indicator in idle_indicators:
+        if indicator in last_content:
+            return "idle"
 
-    # Check for the input prompt line: "❯ " at start of line with nothing after
+    # Check for the input prompt line: "❯" anywhere means waiting for input
     for line in reversed(last_lines):
         stripped = line.strip()
-        if stripped == "❯" or stripped.startswith("❯ "):
-            # Empty prompt or just the prompt character
-            if stripped == "❯" or len(stripped) <= 3:
-                return "idle"
+        if stripped.startswith("❯"):
+            return "idle"
 
     # Check for permission prompts
     permission_patterns = ["Allow", "Deny", "allow this", "approve"]
