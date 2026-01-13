@@ -56,7 +56,7 @@ def pick_one(
         title=title,
         menu_cursor_style=("fg_cyan", "bold"),
         menu_highlight_style=("bg_gray", "fg_black"),
-        search_key="/",
+        search_key=None,  # Auto-filter on any letter key (use Ctrl-j/k to navigate)
         search_highlight_style=("fg_yellow", "bold"),
     )
 

@@ -199,8 +199,8 @@ wt status
 
 When `wt go` or `wt fg` are invoked without arguments, an interactive picker is shown:
 
-- **j/k** or arrow keys to navigate
-- **/** to filter by typing
+- Start typing to filter
+- **Arrow keys** or **Ctrl-j/k** to navigate
 - **Enter** to select
 - **q** or **Esc** to cancel
 
