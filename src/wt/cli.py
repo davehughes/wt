@@ -25,8 +25,59 @@ class WorktreeCompleter:
             return completions
         except Exception as e:
             # Write to stderr for debugging (won't affect completions)
-
             print(f"WorktreeCompleter error: {e}", file=sys.stderr)
+            return []
+
+
+class BranchCompleter:
+    """Complete from branches matching branch_prefix/topic/name pattern.
+
+    This is useful for `wt go` since it can create worktrees from existing branches.
+    Includes both existing worktrees and branches without worktrees.
+    """
+
+    def __call__(self, prefix, **kwargs):
+        try:
+            config = Config.load()
+
+            # Get existing worktree names
+            worktrees = commands.cmd_list(config)
+            worktree_names = {f"{wt['topic']}/{wt['name']}" for wt in worktrees}
+
+            # Start with existing worktrees
+            completions = set(worktree_names)
+
+            # Add branches that match prefix pattern but don't have worktrees
+            branch_prefix = f"{config.branch_prefix}/"
+            try:
+                # Get main repo for branch listing
+                main_repo = config.main_repo
+                if not main_repo:
+                    for wt in worktrees:
+                        try:
+                            main_repo = git.get_main_repo_path(wt["path"])
+                            break
+                        except git.GitError:
+                            continue
+
+                if main_repo:
+                    all_branches = git.list_all_branches(path=main_repo)
+                    for branch in all_branches:
+                        if branch.startswith(branch_prefix):
+                            # Extract topic/name from prefix/topic/name
+                            suffix = branch[len(branch_prefix):]
+                            if "/" in suffix:
+                                completions.add(suffix)
+            except git.GitError:
+                pass  # Fall back to just worktrees
+
+            # Filter by prefix if provided
+            result = sorted(completions)
+            if prefix:
+                result = [c for c in result if c.startswith(prefix)]
+            return result
+        except Exception as e:
+            print(f"BranchCompleter error: {e}", file=sys.stderr)
             return []
 
 
@@ -54,6 +105,7 @@ class ProfileCompleter:
 
 
 _worktree_completer = WorktreeCompleter()
+_branch_completer = BranchCompleter()
 _session_completer = SessionCompleter()
 _profile_completer = ProfileCompleter()
 
@@ -72,7 +124,7 @@ def main() -> int:
         "name",
         nargs="?",
         help="Worktree name in topic/name format. Interactive picker if omitted.",
-    ).completer = _worktree_completer
+    ).completer = _branch_completer
     go_parser.add_argument(
         "--profile",
         metavar="NAME",
