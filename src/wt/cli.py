@@ -118,8 +118,8 @@ def main() -> int:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # wt go [name] [--profile <name>] [--from <branch>] [--close]
-    go_parser = subparsers.add_parser("go", help="Go to a worktree (creates if needed)")
+    # wt go [name] [--profile <name>] [--from <branch>]
+    go_parser = subparsers.add_parser("go", help="Open a worktree in a new window")
     go_parser.add_argument(
         "name",
         nargs="?",
@@ -136,17 +136,35 @@ def main() -> int:
         metavar="BRANCH",
         help="Base branch if creating new worktree (defaults to current branch)",
     )
-    go_parser.add_argument(
+    go_parser.set_defaults(func=handle_go)
+
+    # wt switch [name] [--profile <name>] [--from <branch>] [--close] (alias: sw)
+    switch_parser = subparsers.add_parser(
+        "switch", aliases=["sw"],
+        help="Switch to a worktree (backgrounds current, creates if needed)"
+    )
+    switch_parser.add_argument(
+        "name",
+        nargs="?",
+        help="Worktree name in topic/name format. Interactive picker if omitted.",
+    ).completer = _branch_completer
+    switch_parser.add_argument(
+        "--profile",
+        metavar="NAME",
+        help="tmux profile name (defaults to config default)",
+    ).completer = _profile_completer
+    switch_parser.add_argument(
+        "--from",
+        dest="from_branch",
+        metavar="BRANCH",
+        help="Base branch if creating new worktree (defaults to current branch)",
+    )
+    switch_parser.add_argument(
         "--close",
         action="store_true",
         help="Close current window instead of backgrounding it",
     )
-    go_parser.add_argument(
-        "--new",
-        action="store_true",
-        help="Open in new window without backgrounding or closing current",
-    )
-    go_parser.set_defaults(func=handle_go)
+    switch_parser.set_defaults(func=handle_switch)
 
     # wt list (alias: ls) [--bg] [--output <format>]
     list_parser = subparsers.add_parser("list", aliases=["ls"], help="List all managed worktrees")
@@ -255,9 +273,9 @@ def main() -> int:
         help="Force remove even if dirty or has open windows",
     )
     remove_parser.add_argument(
-        "--keep-branch",
+        "--delete-branch",
         action="store_true",
-        help="Keep the git branch after removing worktree",
+        help="Also delete the git branch",
     )
     remove_parser.add_argument(
         "--yes", "-y",
@@ -278,19 +296,21 @@ def main() -> int:
     )
     prune_parser.set_defaults(func=handle_prune)
 
-    # wt hook-stop (called by Claude Code Stop hook)
-    hook_stop_parser = subparsers.add_parser(
-        "hook-stop",
-        help="Handle Claude Code Stop hook (reads JSON from stdin)",
+    # wt hook <type> (called by Claude Code hooks)
+    hook_parser = subparsers.add_parser(
+        "hook",
+        help="Handle Claude Code hooks (reads JSON from stdin)",
     )
-    hook_stop_parser.set_defaults(func=handle_hook_stop)
+    hook_parser.add_argument(
+        "hook_type",
+        choices=["stop", "attention"],
+        help="Hook type: 'stop' (task finished) or 'attention' (needs input)",
+    )
+    hook_parser.set_defaults(func=handle_hook)
 
-    # wt hook-attention (called by Claude Code Notification hook)
-    hook_attention_parser = subparsers.add_parser(
-        "hook-attention",
-        help="Handle Claude Code Notification hook (reads JSON from stdin)",
-    )
-    hook_attention_parser.set_defaults(func=handle_hook_attention)
+    # wt help
+    help_parser = subparsers.add_parser("help", help="Show this help message")
+    help_parser.set_defaults(func=lambda _: parser.print_help() or 0, requires_config=False)
 
     # Disable default file completion - only use our custom completers
     argcomplete.autocomplete(parser, default_completer=None)
@@ -700,7 +720,7 @@ def handle_remove(config: Config, args: argparse.Namespace) -> int:
         config,
         name,
         force=args.force,
-        keep_branch=args.keep_branch,
+        delete_branch=args.delete_branch,
     )
     print(result)
     return 0
@@ -739,7 +759,28 @@ def handle_prune(config: Config, args: argparse.Namespace) -> int:
 
 
 def handle_go(config: Config, args: argparse.Namespace) -> int:
-    """Handle the 'go' command."""
+    """Handle the 'go' command - opens worktree in new window."""
+    name = resolve_worktree_name(config, args.name)
+    if name is None:
+        return 1
+
+    window_target, was_created = commands.cmd_go(
+        config,
+        name,
+        close=False,
+        new=True,
+        profile=args.profile,
+        from_branch=args.from_branch,
+    )
+    if was_created:
+        print(f"Created worktree: {window_target}")
+    else:
+        print(f"Opened: {window_target}")
+    return 0
+
+
+def handle_switch(config: Config, args: argparse.Namespace) -> int:
+    """Handle the 'switch' command - backgrounds current and switches to target."""
     name = resolve_worktree_name(config, args.name)
     if name is None:
         return 1
@@ -748,7 +789,7 @@ def handle_go(config: Config, args: argparse.Namespace) -> int:
         config,
         name,
         close=args.close,
-        new=args.new,
+        new=False,
         profile=args.profile,
         from_branch=args.from_branch,
     )
@@ -759,8 +800,8 @@ def handle_go(config: Config, args: argparse.Namespace) -> int:
     return 0
 
 
-def handle_hook_stop(config: Config, args: argparse.Namespace) -> int:
-    """Handle the 'hook-stop' command (Claude Code Stop hook)."""
+def handle_hook(config: Config, args: argparse.Namespace) -> int:
+    """Handle Claude Code hooks (stop, attention)."""
     import json
 
     # Read JSON from stdin
@@ -769,21 +810,10 @@ def handle_hook_stop(config: Config, args: argparse.Namespace) -> int:
     except json.JSONDecodeError:
         hook_data = {}
 
-    commands.cmd_hook_stop(config, hook_data)
-    return 0
-
-
-def handle_hook_attention(config: Config, args: argparse.Namespace) -> int:
-    """Handle the 'hook-attention' command (Claude Code Notification hook)."""
-    import json
-
-    # Read JSON from stdin
-    try:
-        hook_data = json.load(sys.stdin)
-    except json.JSONDecodeError:
-        hook_data = {}
-
-    commands.cmd_hook_attention(config, hook_data)
+    if args.hook_type == "stop":
+        commands.cmd_hook_stop(config, hook_data)
+    elif args.hook_type == "attention":
+        commands.cmd_hook_attention(config, hook_data)
     return 0
 
 

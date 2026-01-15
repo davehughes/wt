@@ -1293,7 +1293,7 @@ def cmd_remove(
     config: Config,
     name: str,
     force: bool = False,
-    keep_branch: bool = False,
+    delete_branch: bool = False,
 ) -> str:
     """Remove a worktree and optionally its branch.
 
@@ -1301,7 +1301,7 @@ def cmd_remove(
         config: Application configuration
         name: Worktree name in "topic/name" format
         force: Whether to force removal (ignore uncommitted changes, close windows)
-        keep_branch: If True, keep the git branch after removing worktree
+        delete_branch: If True, also delete the git branch
 
     Returns:
         Success message
@@ -1347,9 +1347,9 @@ def cmd_remove(
     # 2. Remove git worktree
     git.remove_worktree(worktree_path, force=force, repo_path=main_repo)
 
-    # 3. Delete branch (unless --keep-branch)
+    # 3. Delete branch (if --delete-branch)
     result_msg = f"Removed {name}"
-    if not keep_branch and git.branch_exists(branch_name, path=main_repo):
+    if delete_branch and git.branch_exists(branch_name, path=main_repo):
         try:
             git.delete_branch(branch_name, force=force, path=main_repo)
             result_msg += f" and branch {branch_name}"

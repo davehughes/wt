@@ -28,15 +28,9 @@ See [CONFIG.md](CONFIG.md) for detailed configuration options and profile exampl
 
 ## Commands
 
-### `wt [go] <topic>/<name> [--profile <name>] [--from <branch>] [--close | --new]`
+### `wt [go] <topic>/<name> [--profile <name>] [--from <branch>]`
 
-The primary command for working with worktrees. The `go` keyword is optional when providing a worktree name. This is the "go work on XYZ" command that transparently handles:
-
-1. Backgrounding the current window (if in a managed worktree)
-2. Foregrounding a backgrounded window (if target is in background)
-3. Switching to an active window (if target already has a window)
-4. Creating a new window (if worktree exists but no window)
-5. Creating worktree + branch + window (if nothing exists yet)
+Open a worktree in a new tmux window. Creates the worktree if it doesn't exist. The `go` keyword is optional when providing a worktree name.
 
 ```bash
 # Interactive picker
@@ -51,20 +45,33 @@ wt go feature/auth
 # Create new worktree from specific branch
 wt feature/auth --from main
 
-# Go with specific tmux profile
+# Open with specific tmux profile
 wt feature/auth --profile focused
-
-# Close current window instead of backgrounding
-wt feature/auth --close
-
-# Open in new window, keep current window as-is
-wt feature/auth --new
 ```
 
 When creating a new worktree:
 - Branch: `<branch_prefix>/<topic>/<name>` (e.g., `dave/feature/auth`)
 - Worktree: `<root>/<topic>/<name>` (e.g., `~/projects/feature/auth`)
 - If the branch already exists (e.g., from a deleted worktree), it's reused
+
+### `wt switch <topic>/<name> [--profile <name>] [--from <branch>] [--close]` (alias: `sw`)
+
+Switch to a worktree, backgrounding the current window. This is the "context switch" command that:
+
+1. Backgrounds the current window (or closes with `--close`)
+2. Foregrounds a backgrounded window (if target is in background)
+3. Switches to an active window (if target already has a window)
+4. Creates a new window (if worktree exists but no window)
+5. Creates worktree + branch + window (if nothing exists yet)
+
+```bash
+# Switch to worktree, backgrounding current
+wt switch feature/auth
+wt sw feature/auth
+
+# Close current window instead of backgrounding
+wt switch feature/auth --close
+```
 
 ### `wt list [--bg]`
 
@@ -129,11 +136,11 @@ Remove a worktree and its branch.
 # Interactive picker
 wt remove
 
-# Remove specific worktree and branch
+# Remove specific worktree (keeps branch by default)
 wt remove feature/auth
 
-# Keep the branch after removing worktree
-wt remove feature/auth --keep-branch
+# Also delete the git branch
+wt remove feature/auth --delete-branch
 
 # Force remove (ignore uncommitted changes, close open windows)
 wt remove feature/auth --force

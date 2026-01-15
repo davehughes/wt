@@ -8,8 +8,8 @@ Claude Code supports hooks that fire at specific events during a session. wt pro
 
 | Command | Hook Event | Fires When |
 |---------|------------|------------|
-| `wt hook-stop` | Stop | Claude finishes responding |
-| `wt hook-attention` | Notification | Claude needs permission or is idle |
+| `wt hook stop` | Stop | Claude finishes responding |
+| `wt hook attention` | Notification | Claude needs permission or is idle |
 
 ## Notification Channels
 
@@ -31,7 +31,7 @@ Add this to `~/.claude/settings.json`:
     "Stop": [
       {
         "hooks": [
-          {"type": "command", "command": "wt hook-stop"}
+          {"type": "command", "command": "wt hook stop"}
         ]
       }
     ],
@@ -39,7 +39,7 @@ Add this to `~/.claude/settings.json`:
       {
         "matcher": "permission_prompt",
         "hooks": [
-          {"type": "command", "command": "wt hook-attention"}
+          {"type": "command", "command": "wt hook attention"}
         ]
       }
     ]
@@ -55,7 +55,7 @@ For project-specific hooks, add to `.claude/settings.json` in your project root 
 
 ## Hook Details
 
-### `wt hook-stop`
+### `wt hook stop`
 
 Called when Claude finishes responding. Sends a "Finished" notification.
 
@@ -69,7 +69,7 @@ Called when Claude finishes responding. Sends a "Finished" notification.
 }
 ```
 
-### `wt hook-attention`
+### `wt hook attention`
 
 Called when Claude needs user attention. The notification urgency depends on the type:
 
@@ -111,7 +111,7 @@ The `matcher` field in hook configuration supports regex patterns:
 
 2. Test the hook command directly:
    ```bash
-   echo '{"cwd": "/tmp", "hook_event_name": "Stop"}' | wt hook-stop
+   echo '{"cwd": "/tmp", "hook_event_name": "Stop"}' | wt hook stop
    ```
 
 3. Check macOS notification permissions for Terminal/iTerm2
