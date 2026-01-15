@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 import argcomplete
+import yaml
 
 from wt import commands, git, graphite, picker, tmux
 from wt.config import Config, ConfigError
@@ -65,7 +67,7 @@ class BranchCompleter:
                     for branch in all_branches:
                         if branch.startswith(branch_prefix):
                             # Extract topic/name from prefix/topic/name
-                            suffix = branch[len(branch_prefix):]
+                            suffix = branch[len(branch_prefix) :]
                             if "/" in suffix:
                                 completions.add(suffix)
             except git.GitError:
@@ -109,6 +111,61 @@ _branch_completer = BranchCompleter()
 _session_completer = SessionCompleter()
 _profile_completer = ProfileCompleter()
 
+# Command groups for help display
+COMMAND_GROUPS = [
+    (
+        "nav",
+        [
+            ("go", "Open a worktree in a new window"),
+            ("switch, sw", "Switch to a worktree (backgrounds current)"),
+            ("fg, yoink", "Bring a backgrounded window to foreground"),
+            ("bg, yeet", "Send current window to background"),
+            ("close, x", "Close current tmux window gracefully"),
+        ],
+    ),
+    (
+        "info",
+        [
+            ("list, ls", "List all managed worktrees"),
+            ("status", "Show config and current worktree status"),
+            ("pwd", "Print worktree path"),
+        ],
+    ),
+    (
+        "management",
+        [
+            ("sync", "Ensure git/graphite branch exists for worktree(s)"),
+            ("rename", "Rename worktree branch, directory, and window"),
+            ("remove, rm", "Remove a worktree"),
+            ("prune", "Clean up stale entries and find orphaned branches"),
+        ],
+    ),
+    (
+        "misc",
+        [
+            ("config-template", "Print a configuration template"),
+            ("hook", "Handle Claude Code hooks"),
+            ("shutdown", "Close all backgrounded windows gracefully"),
+            ("help", "Show this help message"),
+        ],
+    ),
+]
+
+
+def print_grouped_help() -> None:
+    """Print help with commands grouped by category."""
+    print("usage: wt <command> [options]")
+    print()
+    print("Worktree session manager for git, graphite, tmux, and Claude Code")
+    print()
+    for group_name, commands in COMMAND_GROUPS:
+        print(f"{group_name}:")
+        for cmd, desc in commands:
+            print(f"  {cmd:<18} {desc}")
+        print()
+    print("Use 'wt <command> --help' for more information on a specific command.")
+    print("Shorthand: 'wt topic/name' is equivalent to 'wt go topic/name'")
+
 
 def main() -> int:
     """Main entry point."""
@@ -140,8 +197,7 @@ def main() -> int:
 
     # wt switch [name] [--profile <name>] [--from <branch>] [--close] (alias: sw)
     switch_parser = subparsers.add_parser(
-        "switch", aliases=["sw"],
-        help="Switch to a worktree (backgrounds current, creates if needed)"
+        "switch", aliases=["sw"], help="Switch to a worktree (backgrounds current, creates if needed)"
     )
     switch_parser.add_argument(
         "name",
@@ -174,7 +230,8 @@ def main() -> int:
         help="Only show backgrounded worktrees",
     )
     list_parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         choices=["text", "json", "yaml"],
         default="text",
         help="Output format (default: text)",
@@ -199,8 +256,8 @@ def main() -> int:
     )
     sync_parser.set_defaults(func=handle_sync)
 
-    # wt close
-    close_parser = subparsers.add_parser("close", help="Close current tmux window gracefully")
+    # wt close (alias: x)
+    close_parser = subparsers.add_parser("close", aliases=["x"], help="Close current tmux window gracefully")
     close_parser.set_defaults(func=handle_close)
 
     # wt shutdown
@@ -210,7 +267,8 @@ def main() -> int:
     # wt status [--output <format>]
     status_parser = subparsers.add_parser("status", help="Show config and current worktree status")
     status_parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         choices=["text", "json", "yaml"],
         default="text",
         help="Output format (default: text)",
@@ -268,7 +326,8 @@ def main() -> int:
         help="Worktree name (topic/name format). Interactive picker if omitted.",
     ).completer = _worktree_completer
     remove_parser.add_argument(
-        "--force", "-f",
+        "--force",
+        "-f",
         action="store_true",
         help="Force remove even if dirty or has open windows",
     )
@@ -278,7 +337,8 @@ def main() -> int:
         help="Also delete the git branch",
     )
     remove_parser.add_argument(
-        "--yes", "-y",
+        "--yes",
+        "-y",
         action="store_true",
         help="Skip confirmation prompt",
     )
@@ -290,7 +350,8 @@ def main() -> int:
         help="Clean up stale worktree entries and find orphaned branches",
     )
     prune_parser.add_argument(
-        "--dry-run", "-n",
+        "--dry-run",
+        "-n",
         action="store_true",
         help="Show what would be done without making changes",
     )
@@ -310,10 +371,15 @@ def main() -> int:
 
     # wt help
     help_parser = subparsers.add_parser("help", help="Show this help message")
-    help_parser.set_defaults(func=lambda _: parser.print_help() or 0, requires_config=False)
+    help_parser.set_defaults(func=lambda _: print_grouped_help() or 0, requires_config=False)
 
     # Disable default file completion - only use our custom completers
     argcomplete.autocomplete(parser, default_completer=None)
+
+    # Handle --help with grouped output
+    if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
+        print_grouped_help()
+        return 0
 
     # Check if first arg looks like a worktree name (topic/name) - if so, insert "go"
     # This must be after argcomplete.autocomplete() which exits early during completion
@@ -361,7 +427,6 @@ def resolve_worktree_name(
     if name is not None:
         return name
 
-
     worktrees = commands.cmd_list(config)
     if not worktrees:
         print(f"{empty_message}. Create one with: {hint}", file=sys.stderr)
@@ -391,7 +456,6 @@ def resolve_session_name(
     if name is not None:
         return name
 
-
     sessions = commands.cmd_sessions(config)
     if not sessions:
         print(empty_message, file=sys.stderr)
@@ -410,8 +474,7 @@ def resolve_session_name(
 
 def handle_list(config: Config, args: argparse.Namespace) -> int:
     """Handle the 'list' command."""
-    import json
-    import yaml
+
 
     worktrees = commands.cmd_list(config)
 
@@ -435,7 +498,7 @@ def handle_list(config: Config, args: argparse.Namespace) -> int:
         # Convert Path objects to strings for serialization
         serializable = []
         for wt in worktrees:
-            item = {k: (str(v) if hasattr(v, '__fspath__') else v) for k, v in wt.items()}
+            item = {k: (str(v) if hasattr(v, "__fspath__") else v) for k, v in wt.items()}
             serializable.append(item)
 
         if args.output == "json":
@@ -595,8 +658,7 @@ profiles:
 
 def handle_status(config: Config, args: argparse.Namespace) -> int:
     """Handle the 'status' command."""
-    import json
-    import yaml
+
 
     status = commands.cmd_status(config)
 
@@ -802,7 +864,6 @@ def handle_switch(config: Config, args: argparse.Namespace) -> int:
 
 def handle_hook(config: Config, args: argparse.Namespace) -> int:
     """Handle Claude Code hooks (stop, attention)."""
-    import json
 
     # Read JSON from stdin
     try:
