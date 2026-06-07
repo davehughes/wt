@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,6 +62,48 @@ def apply_symlinks(symlinks: dict[Path, Path], worktree_path: Path) -> list[str]
             # Create new symlink
             target.symlink_to(source)
             actions.append(f"Created symlink {relative_target} → {source}")
+
+    return actions
+
+
+def apply_copy_files(copy_files: dict[Path, Path], worktree_path: Path) -> list[str]:
+    """Copy configured files/directories into a worktree.
+
+    Copies source files/directories to relative targets within the worktree.
+    Existing files/directories are not overwritten (warning issued).
+
+    Args:
+        copy_files: Mapping of source paths to relative target paths
+        worktree_path: Path to the worktree directory
+
+    Returns:
+        List of actions taken (for reporting)
+    """
+    actions = []
+
+    for source, relative_target in copy_files.items():
+        target = worktree_path / relative_target
+
+        # Check if source exists
+        if not source.exists():
+            actions.append(f"Skipped {relative_target}: source {source} not found")
+            continue
+
+        # Ensure parent directory exists
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        # Handle existing target
+        if target.exists() or target.is_symlink():
+            # File or directory exists - don't overwrite
+            actions.append(f"Skipped {relative_target}: already exists")
+        else:
+            # Copy file or directory
+            if source.is_dir():
+                shutil.copytree(source, target)
+                actions.append(f"Copied directory {source} → {relative_target}")
+            else:
+                shutil.copy2(source, target)
+                actions.append(f"Copied file {source} → {relative_target}")
 
     return actions
 
@@ -193,6 +236,11 @@ def ensure_worktree(
     symlinks = config.get_symlinks(profile)
     if symlinks:
         apply_symlinks(symlinks, worktree_path)
+
+    # Apply configured file copies from profile
+    copy_files = config.get_copy_files(profile)
+    if copy_files:
+        apply_copy_files(copy_files, worktree_path)
 
     return worktree_path, True
 
@@ -500,6 +548,12 @@ def cmd_sync(
         if symlinks:
             symlink_actions = apply_symlinks(symlinks, worktree_path)
             actions.extend(symlink_actions)
+
+        # Apply configured file copies (using default profile)
+        copy_files = config.get_copy_files()
+        if copy_files:
+            copy_actions = apply_copy_files(copy_files, worktree_path)
+            actions.extend(copy_actions)
 
     return actions
 
@@ -877,26 +931,14 @@ def _create_window_for_worktree(
             tmux.run_tmux("rename-window", "-t", f"{session_name}:0", window_name)
             window_target = f"{session_name}:{window_name}"
 
-            # Set up panes from profile
+            # Set up panes from profile. Target by id since window names may
+            # contain '.', which tmux treats as the window/pane separator.
             profile_rendered = tmux.render_profile(profile_config, topic, wt_name, worktree_path)
             panes = profile_rendered.get("panes", [])
             layout = profile_rendered.get("layout", "main-vertical")
 
-            if panes:
-                for cmd in panes[0].get("shell_command", []):
-                    tmux.send_keys(window_target, cmd)
-
-            for i, pane_config in enumerate(panes[1:], start=1):
-                tmux.split_window(window_target, start_directory=worktree_path)
-                pane_target = f"{window_target}.{i}"
-                for cmd in pane_config.get("shell_command", []):
-                    tmux.send_keys(pane_target, cmd)
-
-            if layout and len(panes) > 1:
-                tmux.select_layout(window_target, layout)
-
-            if panes:
-                tmux.select_pane(f"{window_target}.0")
+            window_id, first_pane_id = tmux.get_window_ids(session_name)
+            tmux.setup_panes(window_id, first_pane_id, panes, layout, worktree_path)
         else:
             window_target = tmux.launch_window(
                 profile=profile_config,
@@ -1082,6 +1124,34 @@ def cmd_status(config: Config, config_path: str | None = None) -> StatusInfo:
     status.backgrounded_count = len(backgrounded)
 
     return status
+
+
+def cmd_name(config: Config) -> str:
+    """Get the name of the current worktree.
+
+    Detects from cwd first, then falls back to tmux window name.
+
+    Args:
+        config: Configuration
+
+    Returns:
+        Worktree name in "topic/name" format
+
+    Raises:
+        ConfigError: If not in a managed worktree or wt-managed window
+    """
+    # Try cwd first
+    current = get_current_worktree_info(config)
+    if current is not None:
+        return f"{current[0]}/{current[1]}"
+
+    # Fall back to tmux window name
+    if tmux.is_inside_tmux():
+        window_info = tmux.get_current_window_info()
+        if window_info and "/" in window_info["window_name"]:
+            return window_info["window_name"]
+
+    raise ConfigError("Not in a managed worktree")
 
 
 def cmd_pwd(config: Config, name: str | None = None) -> Path:
@@ -1334,15 +1404,29 @@ def cmd_remove(
         raise ConfigError("Worktree has uncommitted changes. Commit them or use --force")
 
     # Get main repo for git operations
-    main_repo = git.get_main_repo_path(worktree_path)
+    # Prefer config.main_repo as it's more reliable than detecting from worktree
+    main_repo = config.main_repo
+    if not main_repo:
+        main_repo = git.get_main_repo_path(worktree_path)
+
+    # Safety check: main_repo must not be inside the worktree being removed
+    resolved_main = main_repo.resolve()
+    resolved_wt = worktree_path.resolve()
+    if resolved_main == resolved_wt or str(resolved_main).startswith(str(resolved_wt) + "/"):
+        raise ConfigError(
+            f"Bug: main_repo ({main_repo}) is the worktree being removed. "
+            "Please set main_repo in your config file."
+        )
 
     # Execute removal
 
-    # 1. Close windows gracefully and kill them
+    # Detect if we're running from the window being removed
+    current_window = tmux.get_current_window()
+
+    # 1. Close claude gracefully in all windows (but don't kill yet)
     for session in sessions_with_window:
         window_target = f"{session}:{window_name}"
         tmux.close_claude_gracefully(window_target)
-        tmux.kill_window(window_target)
 
     # 2. Remove git worktree
     git.remove_worktree(worktree_path, force=force, repo_path=main_repo)
@@ -1356,7 +1440,14 @@ def cmd_remove(
         except git.GitError as e:
             result_msg += f" (branch not deleted: {e})"
 
-    # 4. Clean up empty topic directory
+    # 4. Kill windows (skip current window - it will close after we exit)
+    for session in sessions_with_window:
+        window_target = f"{session}:{window_name}"
+        if current_window and window_target == current_window:
+            continue  # Don't kill the window we're running from
+        tmux.kill_window(window_target)
+
+    # 5. Clean up empty topic directory
     topic_dir = worktree_path.parent
     if topic_dir.exists() and not any(topic_dir.iterdir()):
         topic_dir.rmdir()
@@ -1430,3 +1521,172 @@ def cmd_prune(config: Config, dry_run: bool = False) -> dict:
             results["orphaned_branches"].append(branch)
 
     return results
+
+
+def cmd_review(
+    config: Config,
+    branch: str,
+    fetch: bool = True,
+    remote: str = "origin",
+    as_name: str | None = None,
+    profile: str | None = None,
+) -> tuple[str, bool]:
+    """Create a worktree for reviewing a remote branch.
+
+    This creates a worktree that tracks a remote branch, ideal for
+    reviewing colleagues' work or PRs.
+
+    Args:
+        config: Application configuration
+        branch: Remote branch name (e.g., "feature" or "origin/feature")
+        fetch: Whether to fetch from remote before checkout
+        remote: Default remote to use (defaults to "origin")
+        as_name: Custom worktree name (defaults to review/<branch>)
+        profile: Profile name for tmux window
+
+    Returns:
+        Tuple of (window_target, was_created) where was_created indicates
+        if a new worktree was created
+
+    Raises:
+        ConfigError: If branch not found or validation fails
+        git.GitError: If git operations fail
+    """
+    # Determine main repo path
+    repo_path = config.main_repo
+    if repo_path is None:
+        try:
+            repo_path = git.get_repo_root()
+        except git.GitError:
+            pass
+
+    if repo_path is None:
+        # Try to find from existing worktree
+        if config.root.exists():
+            for topic_dir in config.root.iterdir():
+                if not topic_dir.is_dir():
+                    continue
+                for wt_dir in topic_dir.iterdir():
+                    if wt_dir.is_dir():
+                        try:
+                            repo_path = git.get_main_repo_path(wt_dir)
+                            break
+                        except git.GitError:
+                            continue
+                if repo_path:
+                    break
+
+    if repo_path is None:
+        raise ConfigError("Cannot determine main git repository. Set 'main_repo' in config or run from within a git repo.")
+
+    # Fetch if requested
+    if fetch:
+        try:
+            git.fetch(remote, path=repo_path)
+        except git.GitError:
+            # Non-fatal: continue without fetch
+            pass
+
+    # Parse branch name - extract remote and branch parts
+    if "/" in branch:
+        # Could be "origin/feature" or "upstream/feature"
+        parts = branch.split("/", 1)
+        potential_remote = parts[0]
+        # Check if it's actually a remote name
+        remotes = git.list_remotes(path=repo_path)
+        if potential_remote in remotes:
+            remote = potential_remote
+            branch_name = parts[1]
+        else:
+            # It's a branch name with slashes like "feature/sub"
+            branch_name = branch
+    else:
+        branch_name = branch
+
+    # Resolve to full remote ref
+    remote_ref = git.resolve_remote_branch(branch_name, remote, path=repo_path)
+    if remote_ref is None:
+        raise ConfigError(f"Branch '{branch_name}' not found on remote '{remote}'. Try: git fetch {remote}")
+
+    # Determine worktree name
+    if as_name:
+        topic, wt_name = config.parse_worktree_name(as_name)
+    else:
+        # Default: review/<branch_name>
+        # Sanitize branch name for use as worktree name (replace / with -)
+        sanitized_branch = branch_name.replace("/", "-")
+        topic = "review"
+        wt_name = sanitized_branch
+
+    worktree_path = config.worktree_path(topic, wt_name)
+    window_name = f"{topic}/{wt_name}"
+
+    # Check if worktree already exists
+    if worktree_path.exists():
+        # Worktree exists - just open/switch to it
+        inside_tmux = tmux.is_inside_tmux()
+        current_session = tmux.get_current_session() if inside_tmux else None
+
+        # Check if window exists
+        if current_session and tmux.window_exists(window_name, current_session):
+            tmux.select_window(f"{current_session}:{window_name}")
+            return f"{current_session}:{window_name}", False
+
+        if tmux.session_exists("wt") and tmux.window_exists(window_name, "wt"):
+            if inside_tmux:
+                tmux.select_window(f"wt:{window_name}")
+            else:
+                tmux.attach_session("wt")
+            return f"wt:{window_name}", False
+
+        # Create window for existing worktree
+        window_target, _ = _create_window_for_worktree(
+            config=config,
+            topic=topic,
+            wt_name=wt_name,
+            worktree_path=worktree_path,
+            profile=profile,
+            target_session=current_session,
+            inside_tmux=inside_tmux,
+        )
+        return window_target, False
+
+    # Create new worktree tracking the remote branch
+    worktree_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Use git worktree add --track -b <local-branch> <path> <remote-ref>
+    # This creates a local branch that tracks the remote branch
+    args = ["worktree", "add", "--track", "-b", branch_name, str(worktree_path), remote_ref]
+
+    # Check if local branch already exists
+    if git.branch_exists(branch_name, path=repo_path):
+        # Branch exists - just check it out without -b
+        args = ["worktree", "add", str(worktree_path), branch_name]
+
+    git.run_git(*args, cwd=repo_path)
+
+    # Apply symlinks from profile
+    symlinks = config.get_symlinks(profile)
+    if symlinks:
+        apply_symlinks(symlinks, worktree_path)
+
+    # Apply file copies from profile
+    copy_files = config.get_copy_files(profile)
+    if copy_files:
+        apply_copy_files(copy_files, worktree_path)
+
+    # Create tmux window
+    inside_tmux = tmux.is_inside_tmux()
+    current_session = tmux.get_current_session() if inside_tmux else None
+
+    window_target, _ = _create_window_for_worktree(
+        config=config,
+        topic=topic,
+        wt_name=wt_name,
+        worktree_path=worktree_path,
+        profile=profile,
+        target_session=current_session,
+        inside_tmux=inside_tmux,
+    )
+
+    return window_target, True

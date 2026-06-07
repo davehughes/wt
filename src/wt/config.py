@@ -163,6 +163,29 @@ class Config:
             symlinks[source_path] = target_path
         return symlinks
 
+    def get_copy_files(self, profile_name: str | None = None) -> dict[Path, Path]:
+        """Get copy_files configuration from a profile.
+
+        Args:
+            profile_name: Profile name (defaults to default_profile)
+
+        Returns:
+            Dict mapping source paths to relative target paths
+
+        Raises:
+            ConfigError: If profile not found or copy target is absolute
+        """
+        profile = self.get_profile(profile_name)
+        copy_files_data = profile.get("copy_files", {})
+        copy_files = {}
+        for source, target in copy_files_data.items():
+            source_path = Path(source).expanduser()
+            target_path = Path(target)  # Keep relative, don't expand
+            if target_path.is_absolute():
+                raise ConfigError(f"Copy target must be relative: {target}")
+            copy_files[source_path] = target_path
+        return copy_files
+
     def parse_worktree_name(self, name: str) -> tuple[str, str]:
         """Parse a topic/name string into (topic, name) tuple.
 

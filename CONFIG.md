@@ -49,7 +49,7 @@ profiles:
 | `root` | Yes | Base directory for worktrees (worktrees stored at `$root/<topic>/<name>`) |
 | `trunk` | No | Primary branch name for graphite (e.g., `main`, `master`). Auto-detected if not set. |
 | `default_profile` | Yes | Name of the default tmux profile |
-| `profiles` | Yes | Dictionary of tmux profile configurations (at least one required). Each profile can include `symlinks`. |
+| `profiles` | Yes | Dictionary of tmux profile configurations (at least one required). Each profile can include `symlinks` and `copy_files`. |
 | `main_repo` | No | Path to main git repository. Auto-detected from existing worktrees if not set. |
 
 ## Profiles
@@ -302,4 +302,109 @@ profiles:
       - shell_command: [cd {{worktree_path}}]
     symlinks:
       ~/.env.test: .env
+```
+
+## Copy Files
+
+Each profile can include a `copy_files` section to automatically copy files or directories into worktrees. Unlike symlinks, copies create independent files that can be modified per-worktree. This is useful for:
+
+- Template files that need per-worktree customization
+- Configuration files you want to edit independently in each worktree
+- Files that don't work well as symlinks (some tools don't follow symlinks)
+
+Different profiles can have different copy_files, allowing you to customize which files are copied based on the type of work.
+
+### Format
+
+```yaml
+profiles:
+  default:
+    panes:
+      - shell_command: [cd {{worktree_path}}]
+    copy_files:
+      /absolute/path/to/source: relative/target/in/worktree
+      ~/path/with/tilde: another/target
+```
+
+- **Source paths** (keys): Absolute paths to files/directories. Tilde (`~`) is expanded.
+- **Target paths** (values): Relative paths within the worktree. Must not be absolute.
+
+### Example
+
+```yaml
+profiles:
+  default:
+    layout: main-vertical
+    panes:
+      - shell_command:
+          - cd {{worktree_path}}
+      - shell_command:
+          - cd {{worktree_path}}
+          - claude --continue || claude
+    copy_files:
+      ~/projects/main/.claude/settings.local.json: .claude/settings.local.json
+      ~/templates/Makefile.template: Makefile
+```
+
+This configuration will:
+1. Copy Claude Code local settings into each worktree
+2. Copy a Makefile template that can be customized per-worktree
+
+### Behavior
+
+Files are copied:
+- When a worktree is created (`wt go <new-worktree>`) using the specified profile
+- When syncing (`wt sync` or `wt sync --all`) using the default profile
+
+Rules:
+- If the source doesn't exist, the copy is skipped (with a message)
+- If a file/directory already exists at the target, it's **not** overwritten (warning issued)
+- Directories are copied recursively
+- Parent directories are created as needed
+- File metadata (permissions, timestamps) is preserved
+
+### Use Cases
+
+#### Template Configuration
+
+Copy a template file that will be customized in each worktree:
+
+```yaml
+profiles:
+  default:
+    panes:
+      - shell_command: [cd {{worktree_path}}]
+    copy_files:
+      ~/templates/.env.template: .env
+```
+
+#### Independent Claude Settings
+
+Copy Claude settings so each worktree can have its own configuration:
+
+```yaml
+profiles:
+  default:
+    panes:
+      - shell_command: [cd {{worktree_path}}]
+    copy_files:
+      ~/projects/main/.claude/settings.local.json: .claude/settings.local.json
+```
+
+### Combining Symlinks and Copy Files
+
+You can use both `symlinks` and `copy_files` in the same profile:
+
+```yaml
+profiles:
+  default:
+    panes:
+      - shell_command: [cd {{worktree_path}}]
+    # Shared files (changes reflect everywhere)
+    symlinks:
+      ~/.env.myproject: .env
+      ~/projects/main/.vscode: .vscode
+    # Independent copies (can be modified per-worktree)
+    copy_files:
+      ~/projects/main/.claude/settings.local.json: .claude/settings.local.json
 ```

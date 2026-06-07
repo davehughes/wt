@@ -279,7 +279,7 @@ def create_window(
     if wt_config:
         set_environment("WT_CONFIG", wt_config, session_name, socket)
 
-    args = ["new-window", "-t", session_name, "-n", window_name]
+    args = ["new-window", "-a", "-t", session_name, "-n", window_name]
     if start_directory:
         args.extend(["-c", str(start_directory)])
     run_tmux(*args, socket=socket)
@@ -361,6 +361,64 @@ def select_pane(target: str, socket: str | None = None) -> None:
     run_tmux("select-pane", "-t", target, socket=socket)
 
 
+def get_window_ids(session_name: str, socket: str | None = None) -> tuple[str, str]:
+    """Get stable ids for the current window of a session.
+
+    Window names can contain '.', which tmux treats as the window/pane
+    separator in target specs, making name-based targets ambiguous. Window
+    and pane ids (e.g. "@1", "%1") never contain '.', so they are safe to use.
+
+    Args:
+        session_name: Session whose current window to inspect
+        socket: Optional socket name
+
+    Returns:
+        Tuple of (window_id, active_pane_id)
+    """
+    result = run_tmux(
+        "display-message", "-t", session_name, "-p", "#{window_id}\t#{pane_id}",
+        socket=socket,
+    )
+    window_id, pane_id = result.stdout.strip().split("\t")
+    return window_id, pane_id
+
+
+def setup_panes(
+    window_id: str,
+    first_pane_id: str,
+    panes: list[dict[str, Any]],
+    layout: str,
+    worktree_path: Path,
+    socket: str | None = None,
+) -> None:
+    """Run shell commands and create panes in a window, targeting by id.
+
+    Args:
+        window_id: Window id (e.g. "@1") to target for splits/layout
+        first_pane_id: Pane id (e.g. "%1") of the window's initial pane
+        panes: List of pane configs, each with optional "shell_command" list
+        layout: tmux layout to apply when there is more than one pane
+        worktree_path: Starting directory for new panes
+        socket: Optional socket name
+    """
+    if panes:
+        for cmd in panes[0].get("shell_command", []):
+            send_keys(first_pane_id, cmd, socket)
+
+    for pane_config in panes[1:]:
+        pane_id = split_window(
+            window_id, horizontal=False, start_directory=worktree_path, socket=socket
+        )
+        for cmd in pane_config.get("shell_command", []):
+            send_keys(pane_id, cmd, socket)
+
+    if layout and len(panes) > 1:
+        select_layout(window_id, layout, socket)
+
+    if panes:
+        select_pane(first_pane_id, socket)
+
+
 def launch_window(
     profile: dict[str, Any],
     topic: str,
@@ -399,30 +457,12 @@ def launch_window(
     # Create the window
     window_target = create_window(window_name, session_name, worktree_path, socket)
 
-    # Run commands in first pane if specified
-    if panes:
-        first_pane = panes[0]
-        commands = first_pane.get("shell_command", [])
-        for cmd in commands:
-            send_keys(window_target, cmd, socket)
+    # Resolve stable ids: window names may contain '.', which tmux treats as
+    # the window/pane separator in target specs, so target by id instead.
+    session = window_target.split(":", 1)[0]
+    window_id, first_pane_id = get_window_ids(session, socket)
 
-    # Create additional panes
-    for i, pane_config in enumerate(panes[1:], start=1):
-        # Split to create new pane
-        split_window(window_target, horizontal=False, start_directory=worktree_path, socket=socket)
-        pane_target = f"{window_target}.{i}"
-
-        # Run commands in the new pane
-        commands = pane_config.get("shell_command", [])
-        for cmd in commands:
-            send_keys(pane_target, cmd, socket)
-
-    # Apply layout
-    if layout and len(panes) > 1:
-        select_layout(window_target, layout, socket)
-
-    # Select first pane
-    select_pane(f"{window_target}.0", socket)
+    setup_panes(window_id, first_pane_id, panes, layout, worktree_path, socket)
 
     return window_target
 

@@ -127,6 +127,11 @@ def get_main_repo_path(path: Path | None = None) -> Path:
     result = run_git("rev-parse", "--git-common-dir", cwd=path)
     git_common_dir = Path(result.stdout.strip())
 
+    # Resolve relative paths (git may return relative paths like "../main/.git")
+    if not git_common_dir.is_absolute():
+        base = path or Path.cwd()
+        git_common_dir = (base / git_common_dir).resolve()
+
     # The common dir is the .git directory of the main repo
     # Its parent is the main repo working directory
     if git_common_dir.name == ".git":
@@ -370,3 +375,109 @@ def prune_worktrees(path: Path | None = None) -> str:
     """
     result = run_git("worktree", "prune", "-v", cwd=path)
     return result.stdout.strip()
+
+
+def list_remotes(path: Path | None = None) -> list[str]:
+    """Get list of configured remotes.
+
+    Args:
+        path: Path within the repository
+
+    Returns:
+        List of remote names
+    """
+    result = run_git("remote", cwd=path)
+    return [r.strip() for r in result.stdout.splitlines() if r.strip()]
+
+
+def is_remote_ref(ref: str, path: Path | None = None) -> bool:
+    """Check if a ref exists as a remote tracking branch.
+
+    Args:
+        ref: Reference to check (e.g., "origin/feature-branch")
+        path: Path within the repository
+
+    Returns:
+        True if ref exists in refs/remotes/
+    """
+    result = run_git(
+        "rev-parse", "--verify", f"refs/remotes/{ref}",
+        cwd=path,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def resolve_remote_branch(
+    branch: str,
+    remote: str = "origin",
+    path: Path | None = None,
+) -> str | None:
+    """Resolve a branch name to a remote tracking ref.
+
+    Tries to find the branch as a remote ref. If branch already includes
+    a remote prefix (e.g., "origin/foo"), uses that. Otherwise, prepends
+    the specified remote.
+
+    Args:
+        branch: Branch name (e.g., "feature" or "origin/feature")
+        remote: Default remote to use if branch doesn't include one
+        path: Path within the repository
+
+    Returns:
+        Full remote ref (e.g., "origin/feature") if found, None otherwise
+    """
+    # Check if branch already has a remote prefix
+    if "/" in branch:
+        # Could be "origin/feature" or "feature/sub-feature"
+        # Check if it's a valid remote ref as-is
+        if is_remote_ref(branch, path):
+            return branch
+
+    # Try with the specified remote
+    full_ref = f"{remote}/{branch}"
+    if is_remote_ref(full_ref, path):
+        return full_ref
+
+    return None
+
+
+def fetch(remote: str = "origin", path: Path | None = None) -> None:
+    """Fetch from a remote.
+
+    Args:
+        remote: Remote name to fetch from
+        path: Path within the repository
+
+    Raises:
+        GitError: If fetch fails
+    """
+    run_git("fetch", remote, cwd=path)
+
+
+def list_remote_branches(remote: str = "origin", path: Path | None = None) -> list[str]:
+    """List branches on a remote.
+
+    Args:
+        remote: Remote name
+        path: Path within the repository
+
+    Returns:
+        List of branch names (without remote prefix, e.g., ["main", "feature"])
+    """
+    prefix = f"refs/remotes/{remote}/"
+    result = run_git(
+        "for-each-ref",
+        f"--format=%(refname:strip={len(prefix.split('/')) - 1})",
+        prefix,
+        cwd=path,
+    )
+    branches = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line and line != "HEAD":
+            # Strip the remote prefix if present
+            if line.startswith(f"{remote}/"):
+                line = line[len(f"{remote}/"):]
+            branches.append(line)
+    return branches

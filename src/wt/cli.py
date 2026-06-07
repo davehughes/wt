@@ -106,10 +106,41 @@ class ProfileCompleter:
             return []
 
 
+class RemoteBranchCompleter:
+    """Complete remote branch names for wt review."""
+
+    def __call__(self, prefix, **kwargs):
+        try:
+            config = Config.load()
+
+            # Get main repo
+            main_repo = config.main_repo
+            if not main_repo:
+                worktrees = commands.cmd_list(config)
+                for wt in worktrees:
+                    try:
+                        main_repo = git.get_main_repo_path(wt["path"])
+                        break
+                    except git.GitError:
+                        continue
+
+            if not main_repo:
+                return []
+
+            # List remote branches
+            branches = git.list_remote_branches("origin", path=main_repo)
+            if prefix:
+                branches = [b for b in branches if b.startswith(prefix)]
+            return sorted(branches)
+        except Exception:
+            return []
+
+
 _worktree_completer = WorktreeCompleter()
 _branch_completer = BranchCompleter()
 _session_completer = SessionCompleter()
 _profile_completer = ProfileCompleter()
+_remote_branch_completer = RemoteBranchCompleter()
 
 # Command groups for help display
 COMMAND_GROUPS = [
@@ -118,6 +149,7 @@ COMMAND_GROUPS = [
         [
             ("go", "Open a worktree in a new window"),
             ("switch, sw", "Switch to a worktree (backgrounds current)"),
+            ("review", "Review a remote branch in a new worktree"),
             ("fg, yoink", "Bring a backgrounded window to foreground"),
             ("bg, yeet", "Send current window to background"),
             ("close, x", "Close current tmux window gracefully"),
@@ -129,6 +161,7 @@ COMMAND_GROUPS = [
             ("list, ls", "List all managed worktrees"),
             ("status", "Show config and current worktree status"),
             ("pwd", "Print worktree path"),
+            ("name", "Print current worktree name"),
         ],
     ),
     (
@@ -222,6 +255,41 @@ def main() -> int:
     )
     switch_parser.set_defaults(func=handle_switch)
 
+    # wt review <branch> [--as <name>] [--no-fetch] [--remote <name>]
+    review_parser = subparsers.add_parser(
+        "review",
+        help="Review a remote branch in a new worktree",
+    )
+    review_parser.add_argument(
+        "branch",
+        help="Remote branch name (e.g., 'feature-branch' or 'origin/feature-branch')",
+    ).completer = _remote_branch_completer
+    review_parser.add_argument(
+        "--as",
+        dest="as_name",
+        metavar="NAME",
+        help="Custom worktree name (topic/name format, defaults to review/<branch>)",
+    )
+    review_parser.add_argument(
+        "--no-fetch",
+        dest="fetch",
+        action="store_false",
+        default=True,
+        help="Skip fetching from remote before checkout",
+    )
+    review_parser.add_argument(
+        "--remote",
+        "-r",
+        default="origin",
+        help="Remote to use (default: origin)",
+    )
+    review_parser.add_argument(
+        "--profile",
+        metavar="NAME",
+        help="tmux profile name (defaults to config default)",
+    ).completer = _profile_completer
+    review_parser.set_defaults(func=handle_review)
+
     # wt list (alias: ls) [--bg] [--output <format>]
     list_parser = subparsers.add_parser("list", aliases=["ls"], help="List all managed worktrees")
     list_parser.add_argument(
@@ -301,6 +369,10 @@ def main() -> int:
     ).completer = _worktree_completer
     pwd_parser.set_defaults(func=handle_pwd)
 
+    # wt name
+    name_parser = subparsers.add_parser("name", help="Print current worktree name (topic/name)")
+    name_parser.set_defaults(func=handle_name)
+
     # wt rename [old] <new>
     rename_parser = subparsers.add_parser(
         "rename",
@@ -318,7 +390,7 @@ def main() -> int:
     remove_parser = subparsers.add_parser(
         "remove",
         aliases=["rm"],
-        help="Remove a worktree and optionally its branch",
+        help="Remove a worktree and its branch",
     )
     remove_parser.add_argument(
         "name",
@@ -326,15 +398,14 @@ def main() -> int:
         help="Worktree name (topic/name format). Interactive picker if omitted.",
     ).completer = _worktree_completer
     remove_parser.add_argument(
-        "--force",
-        "-f",
+        "--no-force",
         action="store_true",
-        help="Force remove even if dirty or has open windows",
+        help="Don't force remove (fail if dirty or has open windows)",
     )
     remove_parser.add_argument(
-        "--delete-branch",
+        "--keep-branch",
         action="store_true",
-        help="Also delete the git branch",
+        help="Keep the git branch (default is to delete it)",
     )
     remove_parser.add_argument(
         "--yes",
@@ -651,6 +722,9 @@ profiles:
     symlinks:
       ~/.env.local: .env
       ~/projects/main/.vscode: .vscode
+    # Files/directories to copy into worktrees using this profile
+    copy_files:
+      ~/projects/main/.claude/settings.local.json: .claude/settings.local.json
 """
     print(template)
     return 0
@@ -741,6 +815,13 @@ def handle_pwd(config: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_name(config: Config, args: argparse.Namespace) -> int:
+    """Handle the 'name' command."""
+    name = commands.cmd_name(config)
+    print(name)
+    return 0
+
+
 def handle_rename(config: Config, args: argparse.Namespace) -> int:
     """Handle the 'rename' command."""
     names = args.names
@@ -771,8 +852,11 @@ def handle_remove(config: Config, args: argparse.Namespace) -> int:
     if name is None:
         return 1
 
-    # Confirm unless --yes or --force
-    if not args.yes and not args.force:
+    force = not args.no_force
+    delete_branch = not args.keep_branch
+
+    # Confirm unless --yes or force (which is now the default)
+    if not args.yes and not force:
         confirm = input(f"Remove worktree '{name}'? [y/N] ")
         if confirm.lower() != "y":
             print("Cancelled")
@@ -781,8 +865,8 @@ def handle_remove(config: Config, args: argparse.Namespace) -> int:
     result = commands.cmd_remove(
         config,
         name,
-        force=args.force,
-        delete_branch=args.delete_branch,
+        force=force,
+        delete_branch=delete_branch,
     )
     print(result)
     return 0
@@ -859,6 +943,23 @@ def handle_switch(config: Config, args: argparse.Namespace) -> int:
         print(f"Created worktree: {window_target}")
     else:
         print(f"Switched to: {window_target}")
+    return 0
+
+
+def handle_review(config: Config, args: argparse.Namespace) -> int:
+    """Handle the 'review' command - checkout remote branch for review."""
+    window_target, was_created = commands.cmd_review(
+        config,
+        branch=args.branch,
+        fetch=args.fetch,
+        remote=args.remote,
+        as_name=args.as_name,
+        profile=args.profile,
+    )
+    if was_created:
+        print(f"Created review worktree: {window_target}")
+    else:
+        print(f"Opened: {window_target}")
     return 0
 
 
