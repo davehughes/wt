@@ -139,7 +139,7 @@ class TestTmuxOperations:
         )
 
         # Create a new window
-        target = tmux.create_window(
+        target, window_id, pane_id = tmux.create_window(
             "new-window",
             session_name="create-window-test",
             start_directory=tmp_path,
@@ -147,6 +147,8 @@ class TestTmuxOperations:
         )
 
         assert target == "create-window-test:new-window"
+        assert window_id.startswith("@")
+        assert pane_id.startswith("%")
         assert tmux.window_exists("new-window", "create-window-test", socket=headless_tmux)
 
     def test_kill_window(self, headless_tmux: str) -> None:

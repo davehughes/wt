@@ -119,7 +119,12 @@ def get_current_worktree_info(config: Config) -> tuple[str, str] | None:
     Returns:
         Tuple of (topic, name) or None if not in a managed worktree
     """
-    cwd = Path.cwd()
+    try:
+        cwd = Path.cwd()
+    except (FileNotFoundError, OSError):
+        # The current directory no longer exists (e.g. it was a worktree that
+        # has since been removed). Treat that as "not in a managed worktree".
+        return None
 
     try:
         rel = cwd.relative_to(config.root)
@@ -937,7 +942,10 @@ def _create_window_for_worktree(
             panes = profile_rendered.get("panes", [])
             layout = profile_rendered.get("layout", "main-vertical")
 
-            window_id, first_pane_id = tmux.get_window_ids(session_name)
+            # Target window index 0 explicitly: the session was just created
+            # so it has exactly one window, and the ":0" index target avoids
+            # the renamed window's name (which may contain '.').
+            window_id, first_pane_id = tmux.get_window_ids(f"{session_name}:0")
             tmux.setup_panes(window_id, first_pane_id, panes, layout, worktree_path)
         else:
             window_target = tmux.launch_window(

@@ -208,6 +208,53 @@ def window_exists(
     return window_name in windows
 
 
+def resolve_window_id(
+    window_name: str,
+    session_name: str,
+    socket: str | None = None,
+) -> str | None:
+    """Resolve a window name to its tmux window id (e.g. "@3").
+
+    Window names can contain '.', which tmux treats as the window/pane
+    separator in target specs, so a name-based target like
+    "session:topic/a.b" is misparsed. list-windows compares names directly
+    (not via target parsing), so it can map a name to a '.'-safe window id.
+
+    Returns None if the window is not found.
+    """
+    result = run_tmux(
+        "list-windows", "-t", session_name,
+        "-F", "#{window_name}\t#{window_id}",
+        socket=socket, check=False,
+    )
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.strip().split("\n"):
+        if "\t" not in line:
+            continue
+        name, window_id = line.split("\t", 1)
+        if name == window_name:
+            return window_id
+    return None
+
+
+def _safe_window_target(target: str, socket: str | None = None) -> str:
+    """Convert a "session:window" target into a '.'-safe window-id target.
+
+    A window name containing '.' would be misparsed by tmux (it treats '.' as
+    the window/pane separator), so resolve it to the window id. Targets with no
+    session prefix, no '.' in the window name, or that don't resolve to a known
+    window (e.g. index-based "session:0") are returned unchanged.
+    """
+    if ":" not in target:
+        return target
+    session_name, window_name = target.split(":", 1)
+    if "." not in window_name:
+        return target
+    window_id = resolve_window_id(window_name, session_name, socket)
+    return window_id if window_id is not None else target
+
+
 def set_environment(
     name: str,
     value: str,
@@ -257,8 +304,14 @@ def create_window(
     session_name: str | None = None,
     start_directory: Path | None = None,
     socket: str | None = None,
-) -> str:
+) -> tuple[str, str, str]:
     """Create a new window in a session.
+
+    Captures the new window's ids directly from new-window so callers never
+    have to look them up afterwards. Window names can contain '.', which tmux
+    treats as the window/pane separator in target specs; looking the window up
+    by name (or relying on the session's "current" window) is therefore
+    ambiguous and racy. Ids (e.g. "@1", "%1") never contain '.'.
 
     Args:
         window_name: Name for the window
@@ -267,7 +320,7 @@ def create_window(
         socket: Optional socket name
 
     Returns:
-        Window target (session:window)
+        Tuple of (window_target, window_id, active_pane_id)
     """
     if session_name is None:
         session_name = get_current_session(socket)
@@ -279,12 +332,16 @@ def create_window(
     if wt_config:
         set_environment("WT_CONFIG", wt_config, session_name, socket)
 
-    args = ["new-window", "-a", "-t", session_name, "-n", window_name]
+    args = [
+        "new-window", "-a", "-t", session_name, "-n", window_name,
+        "-P", "-F", "#{window_id}\t#{pane_id}",
+    ]
     if start_directory:
         args.extend(["-c", str(start_directory)])
-    run_tmux(*args, socket=socket)
+    result = run_tmux(*args, socket=socket)
 
-    return f"{session_name}:{window_name}"
+    window_id, pane_id = result.stdout.strip().split("\t")
+    return f"{session_name}:{window_name}", window_id, pane_id
 
 
 def split_window(
@@ -304,18 +361,13 @@ def split_window(
     Returns:
         New pane target
     """
-    args = ["split-window", "-t", target]
+    args = ["split-window", "-t", target, "-P", "-F", "#{pane_id}"]
     if horizontal:
         args.append("-h")
     if start_directory:
         args.extend(["-c", str(start_directory)])
-    run_tmux(*args, socket=socket)
+    result = run_tmux(*args, socket=socket)
 
-    # Get the new pane id
-    result = run_tmux(
-        "display-message", "-t", target, "-p", "#{pane_id}",
-        socket=socket,
-    )
     return result.stdout.strip()
 
 
@@ -348,7 +400,7 @@ def select_window(target: str, socket: str | None = None) -> None:
         target: Window target
         socket: Optional socket name
     """
-    run_tmux("select-window", "-t", target, socket=socket)
+    run_tmux("select-window", "-t", _safe_window_target(target, socket), socket=socket)
 
 
 def select_pane(target: str, socket: str | None = None) -> None:
@@ -361,22 +413,24 @@ def select_pane(target: str, socket: str | None = None) -> None:
     run_tmux("select-pane", "-t", target, socket=socket)
 
 
-def get_window_ids(session_name: str, socket: str | None = None) -> tuple[str, str]:
-    """Get stable ids for the current window of a session.
+def get_window_ids(target: str, socket: str | None = None) -> tuple[str, str]:
+    """Get stable ids for a window target's window and active pane.
 
     Window names can contain '.', which tmux treats as the window/pane
     separator in target specs, making name-based targets ambiguous. Window
     and pane ids (e.g. "@1", "%1") never contain '.', so they are safe to use.
+    Pass an unambiguous target (a session name, or a "session:index" target)
+    rather than a name-based one.
 
     Args:
-        session_name: Session whose current window to inspect
+        target: Window target to inspect (e.g. "session" or "session:0")
         socket: Optional socket name
 
     Returns:
         Tuple of (window_id, active_pane_id)
     """
     result = run_tmux(
-        "display-message", "-t", session_name, "-p", "#{window_id}\t#{pane_id}",
+        "display-message", "-t", target, "-p", "#{window_id}\t#{pane_id}",
         socket=socket,
     )
     window_id, pane_id = result.stdout.strip().split("\t")
@@ -409,6 +463,10 @@ def setup_panes(
         pane_id = split_window(
             window_id, horizontal=False, start_directory=worktree_path, socket=socket
         )
+        # Re-tile after each split so panes stay evenly sized; otherwise
+        # repeated top/bottom splits halve the active pane until it runs out
+        # of room ("no space for new pane") on shorter windows.
+        select_layout(window_id, "tiled", socket)
         for cmd in pane_config.get("shell_command", []):
             send_keys(pane_id, cmd, socket)
 
@@ -454,13 +512,12 @@ def launch_window(
     layout = rendered.get("layout", "main-vertical")
     panes = rendered.get("panes", [])
 
-    # Create the window
-    window_target = create_window(window_name, session_name, worktree_path, socket)
-
-    # Resolve stable ids: window names may contain '.', which tmux treats as
-    # the window/pane separator in target specs, so target by id instead.
-    session = window_target.split(":", 1)[0]
-    window_id, first_pane_id = get_window_ids(session, socket)
+    # Create the window, capturing stable ids for the new window/pane. Window
+    # names may contain '.', which tmux treats as the window/pane separator in
+    # target specs, so we target by id rather than by name.
+    window_target, window_id, first_pane_id = create_window(
+        window_name, session_name, worktree_path, socket
+    )
 
     setup_panes(window_id, first_pane_id, panes, layout, worktree_path, socket)
 
@@ -504,7 +561,7 @@ def list_panes(target: str, socket: str | None = None) -> list[dict[str, str]]:
         List of pane info dicts with keys: target, command
     """
     result = run_tmux(
-        "list-panes", "-t", target,
+        "list-panes", "-t", _safe_window_target(target, socket),
         "-F", "#{session_name}:#{window_index}.#{pane_index}:#{pane_current_command}",
         socket=socket,
         check=False,
@@ -696,10 +753,10 @@ def move_window(
     parts = source_target.split(":")
     window_name = parts[1] if len(parts) > 1 else parts[0]
 
-    # Move the window
+    # Move the window (resolve to a '.'-safe id since names may contain '.')
     run_tmux(
         "move-window",
-        "-s", source_target,
+        "-s", _safe_window_target(source_target, socket),
         "-t", dest_session,
         socket=socket,
     )
@@ -767,7 +824,7 @@ def kill_window(target: str, socket: str | None = None) -> None:
         target: Window target
         socket: Optional socket name
     """
-    run_tmux("kill-window", "-t", target, socket=socket, check=False)
+    run_tmux("kill-window", "-t", _safe_window_target(target, socket), socket=socket, check=False)
 
 
 def rename_window(
@@ -785,7 +842,7 @@ def rename_window(
         socket: Optional socket name
     """
     run_tmux(
-        "rename-window", "-t", f"{session}:{old_name}", new_name,
+        "rename-window", "-t", _safe_window_target(f"{session}:{old_name}", socket), new_name,
         socket=socket,
         check=False,
     )
