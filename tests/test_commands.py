@@ -245,3 +245,61 @@ class TestCmdStatus:
             assert not status.has_tmux_window
         finally:
             os.chdir(old_cwd)
+
+
+class TestResolveMainRepo:
+    """Tests for main-repo resolution (replaces four open-coded copies)."""
+
+    def test_prefers_configured_main_repo(self, temp_config, tmp_path: Path) -> None:
+        """An explicit main_repo wins without touching the filesystem."""
+        _, config = temp_config
+        config.main_repo = tmp_path / "explicit"
+
+        assert commands.resolve_main_repo(config) == tmp_path / "explicit"
+
+    def test_finds_repo_from_existing_worktree(self, temp_config, temp_git_repo: Path) -> None:
+        """With no main_repo set, an existing managed worktree identifies it."""
+        _, config = temp_config
+        commands.ensure_worktree(config, "topic/wt1")
+
+        # Only now drop main_repo, so resolution has to go via the worktree.
+        config.main_repo = None
+        assert commands.resolve_main_repo(config, use_cwd=False) == temp_git_repo
+
+    def test_returns_none_when_undeterminable(self, temp_config, tmp_path: Path) -> None:
+        """An empty root with no config and no cwd repo yields None."""
+        _, config = temp_config
+        config.main_repo = None
+        config.root = tmp_path / "empty-root"
+
+        assert commands.resolve_main_repo(config, use_cwd=False) is None
+
+
+class TestListStatusIsOptIn:
+    """Claude status costs a capture-pane per window, so it must be opt-in.
+
+    cmd_list is also what shell completion calls, so the default path has to stay
+    cheap.
+    """
+
+    def test_status_absent_by_default(self, temp_config) -> None:
+        """Default listing reports no Claude status."""
+        _, config = temp_config
+        commands.ensure_worktree(config, "topic/nostatus")
+
+        entries = commands.cmd_list(config)
+
+        assert entries
+        assert all(entry["claude_status"] is None for entry in entries)
+
+    def test_status_not_probed_by_default(self, temp_config, monkeypatch) -> None:
+        """The default path must not call get_claude_status at all."""
+        _, config = temp_config
+        commands.ensure_worktree(config, "topic/noprobe")
+
+        def fail(*a, **kw):
+            raise AssertionError("get_claude_status must not run without include_status")
+
+        monkeypatch.setattr(commands.tmux, "get_claude_status", fail)
+
+        commands.cmd_list(config)

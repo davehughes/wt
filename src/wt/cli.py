@@ -52,16 +52,7 @@ class BranchCompleter:
             # Add branches that match prefix pattern but don't have worktrees
             branch_prefix = f"{config.branch_prefix}/"
             try:
-                # Get main repo for branch listing
-                main_repo = config.main_repo
-                if not main_repo:
-                    for wt in worktrees:
-                        try:
-                            main_repo = git.get_main_repo_path(wt["path"])
-                            break
-                        except git.GitError:
-                            continue
-
+                main_repo = commands.resolve_main_repo(config, use_cwd=False)
                 if main_repo:
                     all_branches = git.list_all_branches(path=main_repo)
                     for branch in all_branches:
@@ -113,17 +104,7 @@ class RemoteBranchCompleter:
         try:
             config = Config.load()
 
-            # Get main repo
-            main_repo = config.main_repo
-            if not main_repo:
-                worktrees = commands.cmd_list(config)
-                for wt in worktrees:
-                    try:
-                        main_repo = git.get_main_repo_path(wt["path"])
-                        break
-                    except git.GitError:
-                        continue
-
+            main_repo = commands.resolve_main_repo(config, use_cwd=False)
             if not main_repo:
                 return []
 
@@ -296,6 +277,12 @@ def main() -> int:
         "--bg",
         action="store_true",
         help="Only show backgrounded worktrees",
+    )
+    list_parser.add_argument(
+        "--status",
+        "-s",
+        action="store_true",
+        help="Report Claude's status per window (inspects pane contents, slower)",
     )
     list_parser.add_argument(
         "--output",
@@ -545,9 +532,7 @@ def resolve_session_name(
 
 def handle_list(config: Config, args: argparse.Namespace) -> int:
     """Handle the 'list' command."""
-
-
-    worktrees = commands.cmd_list(config)
+    worktrees = commands.cmd_list(config, include_status=args.status)
 
     # Filter by --bg flag if specified
     if args.bg:
@@ -679,21 +664,21 @@ default_profile: default
 
 # Profiles define the pane layout for worktree windows
 # Available variables: {{topic}}, {{name}}, {{worktree_path}}
+#
+# Panes already start in the worktree, so shell_command needs no
+# `cd {{worktree_path}}`. Use [] for a pane that is just a shell.
 profiles:
   default:
     layout: main-vertical
     panes:
+      - shell_command: []
       - shell_command:
-          - cd {{worktree_path}}
-      - shell_command:
-          - cd {{worktree_path}}
           - claude --continue || claude
 
   # Example: editor-focused profile
   editor:
     panes:
       - shell_command:
-          - cd {{worktree_path}}
           - $EDITOR .
 
   # Example: three-pane layout
@@ -701,22 +686,17 @@ profiles:
     layout: main-horizontal
     panes:
       - shell_command:
-          - cd {{worktree_path}}
           - $EDITOR .
+      - shell_command: []
       - shell_command:
-          - cd {{worktree_path}}
-      - shell_command:
-          - cd {{worktree_path}}
           - claude --continue || claude
 
   # Example: profile with symlinks for shared files
   with-symlinks:
     layout: main-vertical
     panes:
+      - shell_command: []
       - shell_command:
-          - cd {{worktree_path}}
-      - shell_command:
-          - cd {{worktree_path}}
           - claude --continue || claude
     # Symlinks to create in worktrees using this profile
     symlinks:

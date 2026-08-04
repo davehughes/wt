@@ -30,10 +30,8 @@ profiles:
   default:
     layout: main-vertical
     panes:
+      - shell_command: []
       - shell_command:
-          - cd {{worktree_path}}
-      - shell_command:
-          - cd {{worktree_path}}
           - claude --continue || claude
     # Optional: symlink shared files into worktrees using this profile
     symlinks:
@@ -80,6 +78,11 @@ profiles:
           - command3
 ```
 
+Every pane is created with its working directory already set to the worktree, so
+`shell_command` does not need a `cd {{worktree_path}}` first. Adding one costs an
+extra shell round-trip per pane. Use `shell_command: []` for a pane that should
+just be a plain shell.
+
 ### Layouts
 
 #### Named Layouts
@@ -107,9 +110,9 @@ profiles:
   custom:
     layout: "0a31,198x48,0,0{98x48,0,0,5,99x48,99,0[99x11,99,0,6,99x12,99,12,7,99x23,99,25,8]}"
     panes:
-      - shell_command: [cd {{worktree_path}}]
-      - shell_command: [cd {{worktree_path}}]
-      - shell_command: [cd {{worktree_path}}]
+      - shell_command: []
+      - shell_command: []
+      - shell_command: []
 ```
 
 #### Reusable Layouts with YAML Anchors
@@ -125,9 +128,9 @@ profiles:
   dev:
     layout: *layout_vsplit
     panes:
-      - shell_command: [cd {{worktree_path}}, $EDITOR .]
-      - shell_command: [cd {{worktree_path}}]
-      - shell_command: [cd {{worktree_path}}]
+      - shell_command: [$EDITOR .]
+      - shell_command: []
+      - shell_command: []
 ```
 
 Note: The `layouts` key is ignored by wt but allows you to define anchors at the top level.
@@ -140,10 +143,8 @@ Note: The `layouts` key is ignored by wt but allows you to define anchors at the
 default:
   layout: main-vertical
   panes:
+    - shell_command: []
     - shell_command:
-        - cd {{worktree_path}}
-    - shell_command:
-        - cd {{worktree_path}}
         - claude --continue || claude
 ```
 
@@ -153,7 +154,6 @@ default:
 editor:
   panes:
     - shell_command:
-        - cd {{worktree_path}}
         - $EDITOR .
 ```
 
@@ -164,12 +164,9 @@ full:
   layout: main-horizontal
   panes:
     - shell_command:
-        - cd {{worktree_path}}
         - $EDITOR .
+    - shell_command: []
     - shell_command:
-        - cd {{worktree_path}}
-    - shell_command:
-        - cd {{worktree_path}}
         - claude --continue || claude
 ```
 
@@ -178,8 +175,7 @@ full:
 ```yaml
 minimal:
   panes:
-    - shell_command:
-        - cd {{worktree_path}}
+    - shell_command: []
 ```
 
 ### Using Profiles
@@ -211,7 +207,7 @@ Different profiles can have different symlinks, allowing you to customize which 
 profiles:
   default:
     panes:
-      - shell_command: [cd {{worktree_path}}]
+      - shell_command: []
     symlinks:
       /absolute/path/to/source: relative/target/in/worktree
       ~/path/with/tilde: another/target
@@ -227,10 +223,8 @@ profiles:
   default:
     layout: main-vertical
     panes:
+      - shell_command: []
       - shell_command:
-          - cd {{worktree_path}}
-      - shell_command:
-          - cd {{worktree_path}}
           - claude --continue || claude
     symlinks:
       ~/.env.myproject: .env
@@ -266,7 +260,7 @@ Keep one `.env` file and symlink it to all worktrees:
 profiles:
   default:
     panes:
-      - shell_command: [cd {{worktree_path}}]
+      - shell_command: []
     symlinks:
       ~/.env.myproject: .env
 ```
@@ -279,7 +273,7 @@ Share VS Code settings across worktrees:
 profiles:
   default:
     panes:
-      - shell_command: [cd {{worktree_path}}]
+      - shell_command: []
     symlinks:
       ~/projects/main/.vscode: .vscode
 ```
@@ -292,14 +286,14 @@ Use different symlinks for different types of work:
 profiles:
   dev:
     panes:
-      - shell_command: [cd {{worktree_path}}]
+      - shell_command: []
     symlinks:
       ~/.env.dev: .env
       ~/projects/main/.vscode: .vscode
 
   test:
     panes:
-      - shell_command: [cd {{worktree_path}}]
+      - shell_command: []
     symlinks:
       ~/.env.test: .env
 ```
@@ -320,7 +314,7 @@ Different profiles can have different copy_files, allowing you to customize whic
 profiles:
   default:
     panes:
-      - shell_command: [cd {{worktree_path}}]
+      - shell_command: []
     copy_files:
       /absolute/path/to/source: relative/target/in/worktree
       ~/path/with/tilde: another/target
@@ -336,10 +330,8 @@ profiles:
   default:
     layout: main-vertical
     panes:
+      - shell_command: []
       - shell_command:
-          - cd {{worktree_path}}
-      - shell_command:
-          - cd {{worktree_path}}
           - claude --continue || claude
     copy_files:
       ~/projects/main/.claude/settings.local.json: .claude/settings.local.json
@@ -373,7 +365,7 @@ Copy a template file that will be customized in each worktree:
 profiles:
   default:
     panes:
-      - shell_command: [cd {{worktree_path}}]
+      - shell_command: []
     copy_files:
       ~/templates/.env.template: .env
 ```
@@ -386,7 +378,7 @@ Copy Claude settings so each worktree can have its own configuration:
 profiles:
   default:
     panes:
-      - shell_command: [cd {{worktree_path}}]
+      - shell_command: []
     copy_files:
       ~/projects/main/.claude/settings.local.json: .claude/settings.local.json
 ```
@@ -399,7 +391,7 @@ You can use both `symlinks` and `copy_files` in the same profile:
 profiles:
   default:
     panes:
-      - shell_command: [cd {{worktree_path}}]
+      - shell_command: []
     # Shared files (changes reflect everywhere)
     symlinks:
       ~/.env.myproject: .env

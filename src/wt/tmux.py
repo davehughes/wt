@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -90,13 +91,14 @@ def render_profile(
     Returns:
         Rendered profile dict
     """
-    import copy
     variables = {
         "topic": topic,
         "name": name,
         "worktree_path": str(worktree_path),
     }
-    return _render_value(copy.deepcopy(profile), variables)
+    # _render_value rebuilds every container it touches, so the profile is never
+    # mutated in place and there is nothing to copy defensively first.
+    return _render_value(profile, variables)
 
 
 def get_current_window_info(socket: str | None = None) -> dict[str, Any] | None:
@@ -208,6 +210,65 @@ def window_exists(
     return window_name in windows
 
 
+@dataclass(frozen=True)
+class WindowIndex:
+    """Every window on the tmux server, captured in a single tmux call.
+
+    Commands that need to answer several "does session X exist / does it hold
+    window Y / what is Y's id" questions should load one of these instead of
+    issuing a has-session or list-windows call per question.
+
+    Ids are the useful output. Window names can contain '.', which tmux treats
+    as the window/pane separator in target specs, so a name-based target like
+    "session:topic/a.b" is misparsed. list-windows compares names directly
+    (not via target parsing), so it can map a name to a '.'-safe window id.
+    """
+
+    # (session_name, window_name, window_id)
+    windows: tuple[tuple[str, str, str], ...] = ()
+
+    @classmethod
+    def load(cls, socket: str | None = None) -> WindowIndex:
+        """Capture the current set of windows across all sessions."""
+        result = run_tmux(
+            "list-windows", "-a",
+            "-F", "#{session_name}\t#{window_name}\t#{window_id}",
+            socket=socket, check=False,
+        )
+        if result.returncode != 0:
+            # No server running, or it went away: an empty index is the honest
+            # answer, and every query below degrades to "not found".
+            return cls()
+
+        rows = []
+        for line in result.stdout.strip().split("\n"):
+            parts = line.split("\t")
+            if len(parts) == 3:
+                rows.append((parts[0], parts[1], parts[2]))
+        return cls(tuple(rows))
+
+    def has_session(self, session_name: str | None) -> bool:
+        """Whether a session exists (a session always has at least one window)."""
+        if session_name is None:
+            return False
+        return any(s == session_name for s, _, _ in self.windows)
+
+    def id_for(self, window_name: str, session_name: str | None) -> str | None:
+        """Window id for a window in a session, or None if not found."""
+        if session_name is None:
+            return None
+        for s, n, wid in self.windows:
+            if s == session_name and n == window_name:
+                return wid
+        return None
+
+    def names_in(self, session_name: str | None) -> set[str]:
+        """Window names in a session."""
+        if session_name is None:
+            return set()
+        return {n for s, n, _ in self.windows if s == session_name}
+
+
 def resolve_window_id(
     window_name: str,
     session_name: str,
@@ -215,27 +276,9 @@ def resolve_window_id(
 ) -> str | None:
     """Resolve a window name to its tmux window id (e.g. "@3").
 
-    Window names can contain '.', which tmux treats as the window/pane
-    separator in target specs, so a name-based target like
-    "session:topic/a.b" is misparsed. list-windows compares names directly
-    (not via target parsing), so it can map a name to a '.'-safe window id.
-
     Returns None if the window is not found.
     """
-    result = run_tmux(
-        "list-windows", "-t", session_name,
-        "-F", "#{window_name}\t#{window_id}",
-        socket=socket, check=False,
-    )
-    if result.returncode != 0:
-        return None
-    for line in result.stdout.strip().split("\n"):
-        if "\t" not in line:
-            continue
-        name, window_id = line.split("\t", 1)
-        if name == window_name:
-            return window_id
-    return None
+    return WindowIndex.load(socket).id_for(window_name, session_name)
 
 
 def _safe_window_target(target: str, socket: str | None = None) -> str:
@@ -344,42 +387,20 @@ def create_window(
     return f"{session_name}:{window_name}", window_id, pane_id
 
 
-def split_window(
-    target: str,
-    horizontal: bool = False,
-    start_directory: Path | None = None,
-    socket: str | None = None,
-) -> str:
-    """Split a window/pane to create a new pane.
+def escape_keys(keys: str) -> str:
+    """Make a key sequence safe to pass to send-keys as one argument.
 
-    Args:
-        target: Window or pane target
-        horizontal: If True, split horizontally (side by side)
-        start_directory: Starting directory for new pane
-        socket: Optional socket name
+    tmux reads a ';' at the end of an argument as a command separator, so
+    send-keys with "echo one;" would treat the following "Enter" as a command of
+    its own ("unknown command: Enter"). Escaping the trailing ';' sends it
+    literally.
 
-    Returns:
-        New pane target
+    Only the trailing ';' may be escaped: mid-string, tmux passes the backslash
+    through verbatim, so "a\\; b" would reach the shell with the backslash in it.
     """
-    args = ["split-window", "-t", target, "-P", "-F", "#{pane_id}"]
-    if horizontal:
-        args.append("-h")
-    if start_directory:
-        args.extend(["-c", str(start_directory)])
-    result = run_tmux(*args, socket=socket)
-
-    return result.stdout.strip()
-
-
-def select_layout(target: str, layout: str, socket: str | None = None) -> None:
-    """Set the layout for a window.
-
-    Args:
-        target: Window target
-        layout: Layout name (main-horizontal, main-vertical, tiled, even-horizontal, even-vertical)
-        socket: Optional socket name
-    """
-    run_tmux("select-layout", "-t", target, layout, socket=socket)
+    if keys.endswith(";"):
+        return keys[:-1] + "\\;"
+    return keys
 
 
 def send_keys(target: str, keys: str, socket: str | None = None) -> None:
@@ -390,7 +411,7 @@ def send_keys(target: str, keys: str, socket: str | None = None) -> None:
         keys: Keys to send
         socket: Optional socket name
     """
-    run_tmux("send-keys", "-t", target, keys, "Enter", socket=socket)
+    run_tmux("send-keys", "-t", target, escape_keys(keys), "Enter", socket=socket)
 
 
 def select_window(target: str, socket: str | None = None) -> None:
@@ -455,26 +476,50 @@ def setup_panes(
         worktree_path: Starting directory for new panes
         socket: Optional socket name
     """
-    if panes:
-        for cmd in panes[0].get("shell_command", []):
-            send_keys(first_pane_id, cmd, socket)
+    if not panes:
+        return
 
-    for pane_config in panes[1:]:
-        pane_id = split_window(
-            window_id, horizontal=False, start_directory=worktree_path, socket=socket
-        )
-        # Re-tile after each split so panes stay evenly sized; otherwise
-        # repeated top/bottom splits halve the active pane until it runs out
-        # of room ("no space for new pane") on shorter windows.
-        select_layout(window_id, "tiled", socket)
-        for cmd in pane_config.get("shell_command", []):
-            send_keys(pane_id, cmd, socket)
+    # Create every extra pane in one tmux invocation. Chained commands are
+    # separated by a standalone ";" argument, and each split's -P prints its new
+    # pane id, so stdout comes back as one id per split, in order.
+    #
+    # The interleaved re-tile keeps panes evenly sized: otherwise repeated
+    # top/bottom splits halve the active pane until it runs out of room ("no
+    # space for new pane") on shorter windows.
+    pane_ids = [first_pane_id]
+    if len(panes) > 1:
+        args: list[str] = []
+        for _ in panes[1:]:
+            if args:
+                args.append(";")
+            args.extend(["split-window", "-t", window_id, "-P", "-F", "#{pane_id}"])
+            if worktree_path:
+                args.extend(["-c", str(worktree_path)])
+            args.extend([";", "select-layout", "-t", window_id, "tiled"])
+        result = run_tmux(*args, socket=socket)
+        pane_ids.extend(line for line in result.stdout.strip().split("\n") if line)
+
+    # Then one more invocation for every pane's shell commands, plus the final
+    # layout and focus. escape_keys keeps a command that ends in ';' from being
+    # read as a command separator here.
+    args = []
+    for pane_id, pane_config in zip(pane_ids, panes):
+        # `shell_command:` with nothing after it parses as None, not [].
+        for cmd in pane_config.get("shell_command") or []:
+            if args:
+                args.append(";")
+            args.extend(["send-keys", "-t", pane_id, escape_keys(cmd), "Enter"])
 
     if layout and len(panes) > 1:
-        select_layout(window_id, layout, socket)
+        if args:
+            args.append(";")
+        args.extend(["select-layout", "-t", window_id, layout])
 
-    if panes:
-        select_pane(first_pane_id, socket)
+    if args:
+        args.append(";")
+    args.extend(["select-pane", "-t", first_pane_id])
+
+    run_tmux(*args, socket=socket)
 
 
 def launch_window(
@@ -583,6 +628,16 @@ def list_panes(target: str, socket: str | None = None) -> list[dict[str, str]]:
     return panes
 
 
+def is_claude_command(command: str) -> bool:
+    """Whether a pane's current command looks like Claude Code.
+
+    Claude Code runs as a node process, so this also matches unrelated node
+    processes; it is a heuristic for "worth inspecting", not proof.
+    """
+    cmd = command.lower()
+    return "claude" in cmd or "node" in cmd
+
+
 def find_claude_panes(target: str, socket: str | None = None) -> list[str]:
     """Find panes running Claude Code.
 
@@ -593,14 +648,11 @@ def find_claude_panes(target: str, socket: str | None = None) -> list[str]:
     Returns:
         List of pane targets (e.g., "session:0.1")
     """
-    panes = list_panes(target, socket)
-    claude_panes = []
-    for pane in panes:
-        # Claude Code typically runs as 'claude' or 'node' process
-        cmd = pane["command"].lower()
-        if "claude" in cmd or "node" in cmd:
-            claude_panes.append(pane["target"])
-    return claude_panes
+    return [
+        pane["target"]
+        for pane in list_panes(target, socket)
+        if is_claude_command(pane["command"])
+    ]
 
 
 def close_claude_gracefully(
@@ -800,18 +852,15 @@ def list_windows(session_name: str, socket: str | None = None) -> list[dict[str,
     return windows
 
 
-def get_current_window(socket: str | None = None) -> str | None:
-    """Get the current window target.
+def get_current_window_id(socket: str | None = None) -> str | None:
+    """Get the current window's id (e.g. "@3").
 
     Returns:
-        Window target (session:window) or None if not in tmux
+        Window id, or None if not in tmux
     """
     if not is_inside_tmux():
         return None
-    result = run_tmux(
-        "display-message", "-p", "#{session_name}:#{window_name}",
-        socket=socket, check=False,
-    )
+    result = run_tmux("display-message", "-p", "#{window_id}", socket=socket, check=False)
     if result.returncode == 0:
         return result.stdout.strip()
     return None
@@ -825,27 +874,6 @@ def kill_window(target: str, socket: str | None = None) -> None:
         socket: Optional socket name
     """
     run_tmux("kill-window", "-t", _safe_window_target(target, socket), socket=socket, check=False)
-
-
-def rename_window(
-    old_name: str,
-    new_name: str,
-    session: str,
-    socket: str | None = None,
-) -> None:
-    """Rename a tmux window.
-
-    Args:
-        old_name: Current window name
-        new_name: New window name
-        session: Session containing the window
-        socket: Optional socket name
-    """
-    run_tmux(
-        "rename-window", "-t", _safe_window_target(f"{session}:{old_name}", socket), new_name,
-        socket=socket,
-        check=False,
-    )
 
 
 def kill_session(session_name: str, socket: str | None = None) -> None:

@@ -158,3 +158,40 @@ class TestWorktreeFromPorcelain:
 
         assert wt.is_detached
         assert wt.branch is None
+
+
+class TestCommonDirResolution:
+    """Tests for common-dir and main-repo resolution."""
+
+    def test_get_git_common_dir(self, temp_git_repo: Path) -> None:
+        """Common dir of a normal repo is its .git directory."""
+        assert git.get_git_common_dir(temp_git_repo) == temp_git_repo / ".git"
+
+    def test_get_git_common_dir_from_worktree(self, temp_git_repo: Path, tmp_path: Path) -> None:
+        """A worktree reports the main repo's .git as its common dir."""
+        wt_path = tmp_path / "wt-common"
+        git.add_worktree(wt_path, "cd-branch", create_branch=True, repo_path=temp_git_repo)
+
+        assert git.get_git_common_dir(wt_path) == temp_git_repo / ".git"
+
+    def test_get_main_repo_path_from_worktree(self, temp_git_repo: Path, tmp_path: Path) -> None:
+        """A worktree resolves back to the main repo's working directory."""
+        wt_path = tmp_path / "wt-main"
+        git.add_worktree(wt_path, "main-branch", create_branch=True, repo_path=temp_git_repo)
+
+        assert git.get_main_repo_path(wt_path) == temp_git_repo
+
+    def test_get_main_repo_path_bare_repo(self, temp_git_repo: Path, tmp_path: Path) -> None:
+        """A worktree of a bare repo resolves to the bare repo itself.
+
+        Regression: this used to fall back to get_repo_root(), handing back the
+        very worktree the caller asked to resolve away from.
+        """
+        bare = tmp_path / "bare.git"
+        git.run_git("clone", "--bare", str(temp_git_repo), str(bare))
+
+        wt_path = tmp_path / "wt-bare"
+        git.add_worktree(wt_path, "bare-branch", create_branch=True, repo_path=bare)
+
+        assert git.get_main_repo_path(wt_path) == bare
+        assert git.get_main_repo_path(wt_path) != wt_path

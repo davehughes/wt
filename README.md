@@ -73,7 +73,7 @@ wt sw feature/auth
 wt switch feature/auth --close
 ```
 
-### `wt list [--bg]`
+### `wt list [--bg] [--status]`
 
 List all managed worktrees with their status.
 
@@ -83,7 +83,14 @@ wt list
 
 # List only backgrounded worktrees
 wt list --bg
+
+# Also report what Claude is doing in each window
+wt list --status
 ```
+
+`--status` inspects the contents of each window's panes, which costs a
+`capture-pane` per window, so it is opt-in. Without it, the window indicator
+still shows whether a window exists and whether it is backgrounded.
 
 ### `wt sync [<topic>/<name>] [--all]`
 

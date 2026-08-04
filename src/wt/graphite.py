@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import shutil
 import subprocess
 from pathlib import Path
+
+from wt import git
 
 
 class GraphiteError(Exception):
@@ -12,8 +16,9 @@ class GraphiteError(Exception):
 
 DEFAULT_TIMEOUT = 10  # seconds
 
-# Cache for is_available result
-_available_cache: bool | None = None
+# Graphite stores its per-repo state in the *common* git directory, so it is
+# shared by every worktree of a repo.
+REPO_CONFIG_NAME = ".graphite_repo_config"
 
 
 def run_gt(
@@ -58,28 +63,35 @@ def run_gt(
         raise GraphiteError("Graphite CLI (gt) not found. Install from https://graphite.dev") from None
 
 
+def run_gt_detached(*args: str, cwd: Path | None = None) -> None:
+    """Start a graphite command and do not wait for it.
+
+    Used for bookkeeping that is already best-effort (see branch_track), where
+    blocking the caller buys nothing: the alternative to a backgrounded failure
+    is a silently swallowed one.
+    """
+    try:
+        subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+            ["gt", "--no-interactive", *args],
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except (OSError, FileNotFoundError):
+        pass
+
+
 def is_available() -> bool:
-    """Check if graphite CLI is available (cached).
+    """Check if graphite CLI is available.
 
     Returns:
-        True if gt command is available
+        True if gt command is on PATH
     """
-    global _available_cache
-    if _available_cache is not None:
-        return _available_cache
-
-    try:
-        subprocess.run(
-            ["gt", "--version"],
-            capture_output=True,
-            check=True,
-            timeout=5,
-        )
-        _available_cache = True
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-        _available_cache = False
-
-    return _available_cache
+    # A PATH lookup, not `gt --version`: spawning node to print a version
+    # string costs ~0.6s, and this is called on nearly every command.
+    return shutil.which("gt") is not None
 
 
 def is_initialized(cwd: Path | None = None) -> bool:
@@ -91,12 +103,14 @@ def is_initialized(cwd: Path | None = None) -> bool:
     Returns:
         True if graphite is initialized (has a trunk configured)
     """
-    # gt log will fail if not initialized
-    result = run_gt("log", "--short", cwd=cwd, check=False)
-    # If it mentions "no trunk" or returns error, not initialized
-    if result.returncode != 0:
+    # Read graphite's own state file rather than shelling out: `gt log` costs
+    # ~2s on a large repo, and this answers the same question exactly.
+    try:
+        config_path = git.get_git_common_dir(cwd) / REPO_CONFIG_NAME
+        data = json.loads(config_path.read_text())
+    except (OSError, ValueError, git.GitError):
         return False
-    return True
+    return bool(data.get("trunk"))
 
 
 def init_repo(trunk: str = "main", cwd: Path | None = None) -> None:
@@ -160,50 +174,35 @@ def ensure_initialized(cwd: Path | None = None, trunk: str | None = None) -> boo
         return False
 
 
-def branch_track(branch: str, parent: str | None = None, cwd: Path | None = None) -> None:
+def branch_track(
+    branch: str,
+    parent: str | None = None,
+    cwd: Path | None = None,
+    detach: bool = False,
+) -> None:
     """Track an existing git branch with graphite.
 
     Args:
         branch: Branch name to track
         parent: Parent branch (if None, uses --force to auto-detect)
         cwd: Working directory
+        detach: Don't wait for gt to finish (fire-and-forget)
 
     Raises:
-        GraphiteError: If tracking fails
+        GraphiteError: If tracking fails and detach is False
     """
     # Use 'gt track' (newer) instead of deprecated 'gt branch track'
     if parent:
         # Explicit parent - use --parent flag
-        run_gt("track", "--parent", parent, branch, cwd=cwd)
+        args = ("track", "--parent", parent, branch)
     else:
         # --force auto-selects the most recent tracked ancestor as parent
-        run_gt("track", "--force", branch, cwd=cwd)
+        args = ("track", "--force", branch)
 
-
-def branch_create(branch: str, cwd: Path | None = None) -> None:
-    """Create a new branch with graphite.
-
-    Args:
-        branch: Branch name to create
-        cwd: Working directory
-
-    Raises:
-        GraphiteError: If creation fails
-    """
-    run_gt("branch", "create", branch, cwd=cwd)
-
-
-def branch_checkout(branch: str, cwd: Path | None = None) -> None:
-    """Check out a branch using graphite.
-
-    Args:
-        branch: Branch name to check out
-        cwd: Working directory
-
-    Raises:
-        GraphiteError: If checkout fails
-    """
-    run_gt("branch", "checkout", branch, cwd=cwd)
+    if detach:
+        run_gt_detached(*args, cwd=cwd)
+    else:
+        run_gt(*args, cwd=cwd)
 
 
 def is_tracked(branch: str, cwd: Path | None = None) -> bool:

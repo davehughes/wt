@@ -66,8 +66,12 @@ def temp_config(tmp_path: Path, temp_git_repo: Path) -> Generator[tuple[Path, Co
     worktrees_root.mkdir()
 
     config_path = config_dir / "config.yaml"
+    # main_repo is pinned to the temp repo on purpose: without it, worktree
+    # creation falls back to whatever repo the suite happens to be run from and
+    # leaves branches and worktrees behind in it.
     config_path.write_text(f"""branch_prefix: test
 root: "{worktrees_root}"
+main_repo: "{temp_git_repo}"
 default_profile: default
 
 profiles:
@@ -116,3 +120,9 @@ def headless_tmux() -> Generator[str, None, None]:
         check=False,
         capture_output=True,
     )
+
+    # A dead server leaves its socket file behind, so the suite would otherwise
+    # accumulate one per test run forever. The path is derived rather than
+    # queried because by now the server is (deliberately) gone.
+    tmux_tmpdir = Path(os.environ.get("TMUX_TMPDIR") or "/tmp")
+    (tmux_tmpdir / f"tmux-{os.getuid()}" / socket).unlink(missing_ok=True)

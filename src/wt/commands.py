@@ -137,6 +137,45 @@ def get_current_worktree_info(config: Config) -> tuple[str, str] | None:
     return None
 
 
+def resolve_main_repo(config: Config, use_cwd: bool = True) -> Path | None:
+    """Find the main git repository for the configured worktree root.
+
+    Tries, in order: the configured main_repo, the repo containing the current
+    directory, then any existing managed worktree.
+
+    Args:
+        config: Application configuration
+        use_cwd: Whether to consider the current directory's repo
+
+    Returns:
+        Path to the main repo, or None if it cannot be determined
+    """
+    if config.main_repo:
+        return config.main_repo
+
+    if use_cwd:
+        try:
+            return git.get_repo_root()
+        except git.GitError:
+            pass
+
+    if not config.root.exists():
+        return None
+
+    for topic_dir in sorted(config.root.iterdir()):
+        if not topic_dir.is_dir():
+            continue
+        for wt_dir in sorted(topic_dir.iterdir()):
+            if not wt_dir.is_dir():
+                continue
+            try:
+                return git.get_main_repo_path(wt_dir)
+            except git.GitError:
+                continue
+
+    return None
+
+
 def ensure_worktree(
     config: Config,
     name: str,
@@ -168,36 +207,7 @@ def ensure_worktree(
     # Ensure parent directory exists
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Determine main repo path
-    repo_path = config.main_repo
-    if repo_path is None:
-        # Try to get repo from current directory
-        try:
-            repo_path = git.get_repo_root()
-        except git.GitError:
-            pass
-
-    if repo_path is None:
-        # Try to find main repo from an existing worktree
-        if config.root.exists():
-            for topic_dir in config.root.iterdir():
-                if not topic_dir.is_dir():
-                    continue
-                for wt_dir in topic_dir.iterdir():
-                    git_file = wt_dir / ".git"
-                    if git_file.is_file():
-                        # Parse gitdir from .git file to find main repo
-                        content = git_file.read_text().strip()
-                        if content.startswith("gitdir:"):
-                            gitdir = content[7:].strip()
-                            # gitdir points to .git/worktrees/name, main repo is parent of .git
-                            if "/worktrees/" in gitdir:
-                                main_git = gitdir.split("/worktrees/")[0]
-                                repo_path = Path(main_git).parent
-                                break
-                if repo_path:
-                    break
-
+    repo_path = resolve_main_repo(config)
     if repo_path is None:
         raise ConfigError("Cannot determine main git repository. Set 'main_repo' in config or run from within a git repo.")
 
@@ -224,20 +234,9 @@ def ensure_worktree(
         repo_path=repo_path,
     )
 
-    # Track with graphite if available
-    # Use main repo path for graphite (worktrees don't share graphite state)
-    if graphite.is_available():
-        try:
-            main_repo = git.get_main_repo_path(worktree_path)
-            # Ensure graphite is initialized before tracking
-            if graphite.ensure_initialized(cwd=main_repo, trunk=config.trunk):
-                # Use from_branch as parent since that's what we branched from
-                graphite.branch_track(branch_name, parent=from_branch, cwd=main_repo)
-        except (graphite.GraphiteError, git.GitError):
-            # Non-fatal: graphite tracking can be done later with sync
-            pass
-
-    # Apply configured symlinks from profile
+    # Apply configured symlinks from profile. These run before the tmux window
+    # exists because the panes depend on them (direnv on a symlinked .envrc,
+    # Claude settings, and so on).
     symlinks = config.get_symlinks(profile)
     if symlinks:
         apply_symlinks(symlinks, worktree_path)
@@ -247,124 +246,43 @@ def ensure_worktree(
     if copy_files:
         apply_copy_files(copy_files, worktree_path)
 
+    # Track with graphite if available. gt runs in the worktree, not the main
+    # repo: it refuses to run outside a working tree (so a bare main_repo is
+    # never valid), and its state lives in the common git dir, so every worktree
+    # of the repo reads and writes the same graphite state anyway.
+    #
+    # Deliberately does NOT initialize graphite: `gt init` is a *re*-init that
+    # rewrites that shared state for every worktree, and it costs seconds. If the
+    # repo isn't set up for graphite yet, that's the user's call to make once
+    # (`gt init`, or `wt sync`), not something to redo on every new worktree.
+    if graphite.is_available():
+        try:
+            if graphite.is_initialized(cwd=worktree_path):
+                # Fire-and-forget: tracking is bookkeeping, already best-effort,
+                # and waiting on it just delays the window the user asked for.
+                graphite.branch_track(
+                    branch_name, parent=from_branch, cwd=worktree_path, detach=True
+                )
+        except (graphite.GraphiteError, git.GitError):
+            # Non-fatal: graphite tracking can be done later with sync
+            pass
+
     return worktree_path, True
 
 
-def cmd_open(
+def cmd_list(
     config: Config,
-    name: str,
-    profile: str | None = None,
-    from_branch: str | None = None,
-) -> tuple[str, bool]:
-    """Open a tmux window for a worktree, creating it if necessary.
-
-    If inside tmux, creates a new window in the current session.
-    If outside tmux, creates a new session with a window and attaches.
-
-    Args:
-        config: Application configuration
-        name: Worktree name in "topic/name" format
-        profile: Profile name (defaults to config default)
-        from_branch: Base branch if creating new worktree (defaults to current branch)
-
-    Returns:
-        Tuple of (window_target, was_created) where was_created indicates
-        if a new worktree was created
-
-    Raises:
-        ConfigError: If name format is invalid
-        git.GitError: If git operations fail
-        tmux.TmuxError: If tmux operations fail
-    """
-    topic, wt_name = config.parse_worktree_name(name)
-
-    # Ensure worktree exists, creating if necessary
-    worktree_path, was_created = ensure_worktree(config, name, from_branch, profile)
-
-    profile_config = config.get_profile(profile)
-    window_name = f"{topic}/{wt_name}"
-
-    # Get current session if in tmux
-    current_session = tmux.get_current_session()
-
-    if current_session:
-        # Inside tmux - check if window already exists
-        if tmux.window_exists(window_name, current_session):
-            tmux.select_window(f"{current_session}:{window_name}")
-            return f"{current_session}:{window_name}", was_created
-
-        # Create new window in current session
-        window_target = tmux.launch_window(
-            profile=profile_config,
-            topic=topic,
-            name=wt_name,
-            worktree_path=worktree_path,
-            session_name=current_session,
-        )
-        return window_target, was_created
-    else:
-        # Outside tmux - need to create or attach to a session
-        session_name = "wt"  # Default session name for wt
-
-        if not tmux.session_exists(session_name):
-            # Create new session
-            tmux.create_session(session_name, worktree_path)
-
-            # Rename the default window
-            tmux.run_tmux("rename-window", "-t", f"{session_name}:0", window_name)
-
-            # Set up panes in the window
-            window_target = f"{session_name}:{window_name}"
-            profile_rendered = tmux.render_profile(profile_config, topic, wt_name, worktree_path)
-            windows = profile_rendered.get("windows", [])
-            if windows:
-                window_config = windows[0]
-                panes = window_config.get("panes", [])
-                layout = window_config.get("layout", "main-vertical")
-
-                # Run commands in first pane
-                if panes:
-                    for cmd in panes[0].get("shell_command", []):
-                        tmux.send_keys(window_target, cmd)
-
-                # Create additional panes
-                for i, pane_config in enumerate(panes[1:], start=1):
-                    tmux.split_window(window_target, start_directory=worktree_path)
-                    pane_target = f"{window_target}.{i}"
-                    for cmd in pane_config.get("shell_command", []):
-                        tmux.send_keys(pane_target, cmd)
-
-                # Apply layout
-                if layout and len(panes) > 1:
-                    tmux.select_layout(window_target, layout)
-
-                tmux.select_pane(f"{window_target}.0")
-        else:
-            # Session exists, check for window
-            if tmux.window_exists(window_name, session_name):
-                window_target = f"{session_name}:{window_name}"
-            else:
-                # Create new window
-                window_target = tmux.launch_window(
-                    profile=profile_config,
-                    topic=topic,
-                    name=wt_name,
-                    worktree_path=worktree_path,
-                    session_name=session_name,
-                )
-
-        # Attach to session
-        tmux.attach_session(session_name)
-        return window_target, was_created
-
-
-def cmd_list(config: Config) -> list[dict[str, str | Path | bool]]:
+    include_status: bool = False,
+) -> list[dict[str, str | Path | bool]]:
     """List all managed worktrees.
 
     Scans $ROOT/<topic>/<name> for worktrees.
 
     Args:
         config: Application configuration
+        include_status: Inspect pane contents to report Claude's status. Costs a
+            capture-pane per candidate window, so it is off by default -- this
+            function is also what shell completion calls.
 
     Returns:
         List of worktree info dicts
@@ -374,23 +292,8 @@ def cmd_list(config: Config) -> list[dict[str, str | Path | bool]]:
     if not config.root.exists():
         return result
 
-    # Determine main repo path for git operations
-    # Priority: config.main_repo > detected from existing worktree
-    main_repo = config.main_repo
-    if not main_repo:
-        # Try to detect from any existing worktree
-        for topic_dir in config.root.iterdir():
-            if not topic_dir.is_dir():
-                continue
-            for wt_dir in topic_dir.iterdir():
-                if wt_dir.is_dir():
-                    try:
-                        main_repo = git.get_main_repo_path(wt_dir)
-                        break
-                    except git.GitError:
-                        continue
-            if main_repo:
-                break
+    # Don't consult the cwd: listing shouldn't depend on where it's run from.
+    main_repo = resolve_main_repo(config, use_cwd=False)
 
     # Get all git worktrees for cross-reference (single git call)
     try:
@@ -404,11 +307,13 @@ def cmd_list(config: Config) -> list[dict[str, str | Path | bool]]:
     except git.GitError:
         all_branches = set()
 
-    # Get tmux window info upfront (minimize tmux calls)
+    # All tmux window state in one call, rather than a has-session plus a
+    # list-windows per session we care about.
     current_session = tmux.get_current_session()
-    current_windows = {w["name"] for w in tmux.list_windows(current_session)} if current_session else set()
-    wt_windows = {w["name"] for w in tmux.list_windows("wt")} if tmux.session_exists("wt") else set()
-    bg_windows = {w["name"] for w in tmux.list_windows(BACKGROUND_SESSION) if w["name"] != PLACEHOLDER_WINDOW} if tmux.session_exists(BACKGROUND_SESSION) else set()
+    index = tmux.WindowIndex.load()
+    current_windows = index.names_in(current_session)
+    wt_windows = index.names_in("wt")
+    bg_windows = index.names_in(BACKGROUND_SESSION) - {PLACEHOLDER_WINDOW}
 
     # Scan root directory for topic/name structure
     for topic_dir in config.root.iterdir():
@@ -437,17 +342,20 @@ def cmd_list(config: Config) -> list[dict[str, str | Path | bool]]:
             if is_backgrounded:
                 has_window = True
 
-            # Get Claude status if window exists
+            # Get Claude status if window exists and the caller asked for it
             claude_status = None
-            if has_window:
-                # Determine which session has the window
+            if has_window and include_status:
+                # Target by window id: names contain '/' and may contain '.',
+                # both of which tmux misparses in a target spec.
                 if is_backgrounded:
-                    window_target = f"{BACKGROUND_SESSION}:{window_name}"
+                    session = BACKGROUND_SESSION
                 elif window_name in wt_windows:
-                    window_target = f"wt:{window_name}"
+                    session = "wt"
                 else:
-                    window_target = f"{current_session}:{window_name}"
-                claude_status = tmux.get_claude_status(window_target)
+                    session = current_session
+                window_id = index.id_for(window_name, session)
+                if window_id:
+                    claude_status = tmux.get_claude_status(window_id)
 
             result.append({
                 "topic": topic,
@@ -511,27 +419,25 @@ def cmd_sync(
             git.create_branch(branch_name, path=worktree_path)
             actions.append(f"Created branch {branch_name}")
 
-        # Track with graphite
-        # Use main repo path for graphite (worktrees don't share graphite state)
+        # Track with graphite. gt runs in the worktree: it refuses to run outside
+        # a working tree, and its state lives in the common git dir, so every
+        # worktree of the repo shares the same graphite state.
+        #
+        # This is the one place that will initialize graphite -- `wt sync` is the
+        # explicit "set this up" command, so a slow, state-rewriting `gt init`
+        # belongs here rather than on the path of every new worktree.
         if graphite.is_available():
-            try:
-                main_repo = git.get_main_repo_path(worktree_path)
-            except git.GitError:
-                actions.append(f"Failed to get main repo for {topic}/{wt_name}")
-                continue
-
-            # Ensure graphite is initialized
-            if not graphite.is_initialized(cwd=main_repo):
-                if graphite.ensure_initialized(cwd=main_repo, trunk=config.trunk):
+            if not graphite.is_initialized(cwd=worktree_path):
+                if graphite.ensure_initialized(cwd=worktree_path, trunk=config.trunk):
                     actions.append("Initialized graphite")
                 else:
                     actions.append("Failed to initialize graphite")
                     continue
 
-            if not graphite.is_tracked(branch_name, cwd=main_repo):
+            if not graphite.is_tracked(branch_name, cwd=worktree_path):
                 try:
                     # Try auto-detect parent first
-                    graphite.branch_track(branch_name, cwd=main_repo)
+                    graphite.branch_track(branch_name, cwd=worktree_path)
                     actions.append(f"Tracked {branch_name} with graphite")
                 except graphite.GraphiteError:
                     # Auto-detect failed, try with trunk as parent
@@ -539,8 +445,8 @@ def cmd_sync(
                     trunk_candidates = [config.trunk] if config.trunk else ["main", "master"]
                     try:
                         for trunk in trunk_candidates:
-                            if git.branch_exists(trunk, path=main_repo):
-                                graphite.branch_track(branch_name, parent=trunk, cwd=main_repo)
+                            if git.branch_exists(trunk, path=worktree_path):
+                                graphite.branch_track(branch_name, parent=trunk, cwd=worktree_path)
                                 actions.append(f"Tracked {branch_name} with graphite (parent: {trunk})")
                                 break
                         else:
@@ -810,7 +716,7 @@ def cmd_go(
     current_window_name = None
     should_background_current = False
     if current_worktree is not None:
-        current_window_name = f"{current_worktree[0]}-{current_worktree[1]}"
+        current_window_name = f"{current_worktree[0]}/{current_worktree[1]}"
         # Background if in tmux, not --new, and switching to different worktree
         should_background_current = (
             inside_tmux and
@@ -818,19 +724,12 @@ def cmd_go(
             current_window_name != target_window_name
         )
 
-    # Check where the target window exists (if anywhere)
-    target_in_background = (
-        tmux.session_exists(BACKGROUND_SESSION) and
-        tmux.window_exists(target_window_name, BACKGROUND_SESSION)
-    )
-    target_in_original_session = (
-        original_session is not None and
-        tmux.window_exists(target_window_name, original_session)
-    )
-    target_in_wt_session = (
-        tmux.session_exists("wt") and
-        tmux.window_exists(target_window_name, "wt")
-    )
+    # Check where the target window exists (if anywhere). One tmux call answers
+    # every question below, and hands back ids we can target safely.
+    index = tmux.WindowIndex.load()
+    target_in_background = index.id_for(target_window_name, BACKGROUND_SESSION) is not None
+    target_in_original_session = index.id_for(target_window_name, original_session) is not None
+    target_in_wt_session = index.id_for(target_window_name, "wt") is not None
 
     # Check if worktree exists on disk
     worktree_exists = worktree_path.exists()
@@ -864,17 +763,17 @@ def cmd_go(
         return window_target, False
 
     elif action == "switch":
-        window_target = f"{original_session}:{target_window_name}"
-        tmux.select_window(window_target)
-        return window_target, False
+        # Select by id: window names contain '/' and may contain '.', which tmux
+        # misparses in a target spec.
+        tmux.select_window(index.id_for(target_window_name, original_session))
+        return f"{original_session}:{target_window_name}", False
 
     elif action == "switch_wt":
-        window_target = f"wt:{target_window_name}"
         if inside_tmux:
-            tmux.select_window(window_target)
+            tmux.select_window(index.id_for(target_window_name, "wt"))
         else:
             tmux.attach_session("wt")
-        return window_target, False
+        return f"wt:{target_window_name}", False
 
     elif action == "create_window":
         # Worktree exists but no window - create window using pre-captured session
@@ -1348,23 +1247,22 @@ def cmd_rename(config: Config, old_name: str | None, new_name: str) -> str:
     new_path.parent.mkdir(parents=True, exist_ok=True)
     git.move_worktree(old_path, new_path, path=main_repo)
 
-    # 3. Rename tmux windows in all sessions
+    # 3. Rename tmux windows in all sessions (one call finds them all)
     current_session = tmux.get_current_session()
-    for session in [current_session, "wt", BACKGROUND_SESSION]:
-        if session and tmux.session_exists(session) and tmux.window_exists(old_window, session):
-            tmux.rename_window(old_window, new_window, session)
+    index = tmux.WindowIndex.load()
+    for session in {current_session, "wt", BACKGROUND_SESSION}:
+        window_id = index.id_for(old_window, session)
+        if window_id:
+            tmux.run_tmux("rename-window", "-t", window_id, new_window, check=False)
 
-    # 4. Update graphite if tracked (optional, non-fatal)
+    # Graphite has no rename, so the old branch's tracking is now stale. There is
+    # nothing to do about it here beyond saying so -- `wt sync` re-tracks under
+    # the new name. (The previous `gt branch info` probe cost ~2s to decide
+    # between doing nothing and doing nothing.)
+    message = f"Renamed {old_name} → {new_name}"
     if graphite.is_available():
-        try:
-            if graphite.is_tracked(old_branch, cwd=main_repo):
-                # Graphite doesn't have rename - need to untrack old and track new
-                # For now, just note that graphite tracking needs manual update
-                pass  # User can run 'wt sync' to fix graphite tracking
-        except graphite.GraphiteError:
-            pass  # Non-fatal
-
-    return f"Renamed {old_name} → {new_name}"
+        message += " (run 'wt sync' to update graphite tracking)"
+    return message
 
 
 def cmd_remove(
@@ -1397,14 +1295,16 @@ def cmd_remove(
     if not worktree_path.exists():
         raise ConfigError(f"Worktree not found: {worktree_path}")
 
-    # Check for open windows
+    # Check for open windows (one call finds them all, and gives us '.'-safe ids)
     current_session = tmux.get_current_session()
-    sessions_with_window = []
-    for session in [current_session, "wt", BACKGROUND_SESSION]:
-        if session and tmux.session_exists(session) and tmux.window_exists(window_name, session):
-            sessions_with_window.append(session)
+    index = tmux.WindowIndex.load()
+    window_ids = [
+        window_id
+        for session in {current_session, "wt", BACKGROUND_SESSION}
+        if (window_id := index.id_for(window_name, session)) is not None
+    ]
 
-    if sessions_with_window and not force:
+    if window_ids and not force:
         raise ConfigError(f"Window '{window_name}' is open. Close it first or use --force")
 
     # Check for uncommitted changes
@@ -1429,12 +1329,11 @@ def cmd_remove(
     # Execute removal
 
     # Detect if we're running from the window being removed
-    current_window = tmux.get_current_window()
+    current_window_id = tmux.get_current_window_id()
 
     # 1. Close claude gracefully in all windows (but don't kill yet)
-    for session in sessions_with_window:
-        window_target = f"{session}:{window_name}"
-        tmux.close_claude_gracefully(window_target)
+    for window_id in window_ids:
+        tmux.close_claude_gracefully(window_id)
 
     # 2. Remove git worktree
     git.remove_worktree(worktree_path, force=force, repo_path=main_repo)
@@ -1449,11 +1348,10 @@ def cmd_remove(
             result_msg += f" (branch not deleted: {e})"
 
     # 4. Kill windows (skip current window - it will close after we exit)
-    for session in sessions_with_window:
-        window_target = f"{session}:{window_name}"
-        if current_window and window_target == current_window:
+    for window_id in window_ids:
+        if window_id == current_window_id:
             continue  # Don't kill the window we're running from
-        tmux.kill_window(window_target)
+        tmux.kill_window(window_id)
 
     # 5. Clean up empty topic directory
     topic_dir = worktree_path.parent
@@ -1478,23 +1376,7 @@ def cmd_prune(config: Config, dry_run: bool = False) -> dict:
     """
     results = {"pruned": [], "orphaned_branches": []}
 
-    # Get main repo
-    main_repo = config.main_repo
-    if not main_repo:
-        # Try to detect from existing worktree
-        for topic_dir in config.root.iterdir():
-            if not topic_dir.is_dir():
-                continue
-            for wt_dir in topic_dir.iterdir():
-                if wt_dir.is_dir():
-                    try:
-                        main_repo = git.get_main_repo_path(wt_dir)
-                        break
-                    except git.GitError:
-                        continue
-            if main_repo:
-                break
-
+    main_repo = resolve_main_repo(config, use_cwd=False)
     if not main_repo:
         raise ConfigError("Cannot find main git repository")
 
@@ -1560,30 +1442,7 @@ def cmd_review(
         ConfigError: If branch not found or validation fails
         git.GitError: If git operations fail
     """
-    # Determine main repo path
-    repo_path = config.main_repo
-    if repo_path is None:
-        try:
-            repo_path = git.get_repo_root()
-        except git.GitError:
-            pass
-
-    if repo_path is None:
-        # Try to find from existing worktree
-        if config.root.exists():
-            for topic_dir in config.root.iterdir():
-                if not topic_dir.is_dir():
-                    continue
-                for wt_dir in topic_dir.iterdir():
-                    if wt_dir.is_dir():
-                        try:
-                            repo_path = git.get_main_repo_path(wt_dir)
-                            break
-                        except git.GitError:
-                            continue
-                if repo_path:
-                    break
-
+    repo_path = resolve_main_repo(config)
     if repo_path is None:
         raise ConfigError("Cannot determine main git repository. Set 'main_repo' in config or run from within a git repo.")
 

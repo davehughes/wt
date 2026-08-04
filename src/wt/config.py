@@ -15,11 +15,13 @@ DEFAULT_CONFIG_PATHS = [
     Path.home() / ".config" / "wt" / "config.yml",
 ]
 
+# Panes are created with their working directory already set to the worktree, so
+# no `cd {{worktree_path}}` is needed here.
 DEFAULT_PROFILE = {
     "layout": "main-vertical",
     "panes": [
-        {"shell_command": ["cd {{worktree_path}}"]},
-        {"shell_command": ["cd {{worktree_path}}", "claude --continue"]},
+        {"shell_command": []},
+        {"shell_command": ["claude --continue"]},
     ],
 }
 

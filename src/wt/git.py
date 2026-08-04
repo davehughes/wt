@@ -108,11 +108,38 @@ def get_repo_root(path: Path | None = None) -> Path:
     return Path(result.stdout.strip())
 
 
+def get_git_common_dir(path: Path | None = None) -> Path:
+    """Get the git directory shared by a repo and all of its worktrees.
+
+    This is where per-repo state lives (including graphite's state files),
+    regardless of which worktree you ask from.
+
+    Args:
+        path: Starting path (defaults to cwd)
+
+    Returns:
+        Absolute path to the common git directory
+
+    Raises:
+        GitError: If not in a git repository
+    """
+    result = run_git("rev-parse", "--git-common-dir", cwd=path)
+    git_common_dir = Path(result.stdout.strip())
+
+    # Resolve relative paths (git may return relative paths like "../main/.git")
+    if not git_common_dir.is_absolute():
+        base = path or Path.cwd()
+        git_common_dir = (base / git_common_dir).resolve()
+
+    return git_common_dir
+
+
 def get_main_repo_path(path: Path | None = None) -> Path:
     """Get the main repository path (resolves worktrees to their main repo).
 
     For a worktree, returns the main repo's working directory.
     For a main repo, returns its root.
+    For a bare repo, returns the bare repo directory itself.
 
     Args:
         path: Starting path (defaults to cwd)
@@ -123,22 +150,17 @@ def get_main_repo_path(path: Path | None = None) -> Path:
     Raises:
         GitError: If not in a git repository
     """
-    # Get the common git directory (shared by all worktrees)
-    result = run_git("rev-parse", "--git-common-dir", cwd=path)
-    git_common_dir = Path(result.stdout.strip())
+    git_common_dir = get_git_common_dir(path)
 
-    # Resolve relative paths (git may return relative paths like "../main/.git")
-    if not git_common_dir.is_absolute():
-        base = path or Path.cwd()
-        git_common_dir = (base / git_common_dir).resolve()
-
-    # The common dir is the .git directory of the main repo
-    # Its parent is the main repo working directory
+    # The common dir is the .git directory of the main repo, so its parent is
+    # the main repo working directory.
     if git_common_dir.name == ".git":
         return git_common_dir.parent
-    else:
-        # Bare repo or unusual setup - fall back to repo root
-        return get_repo_root(path)
+
+    # Bare repo (e.g. ~/projects/source.git): there is no working directory,
+    # and the common dir *is* the repo. Returning get_repo_root(path) here
+    # would hand back the worktree we were asked to resolve away from.
+    return git_common_dir
 
 
 def get_current_branch(path: Path | None = None) -> str | None:
